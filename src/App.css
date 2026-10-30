@@ -292,6 +292,19 @@
 .dialog-fields .form-label { gap: 6px; }
 .dialog-fields .form-label input, .dialog-fields .form-label select { min-height: 36px; }
 .dialog-footer { display: flex; justify-content: flex-end; gap: 7px; margin-top: 19px; padding-top: 13px; border-top: 1px solid #eff1ef; }
+.form-section-title { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid #35434f; border-radius: 6px; background: #1d2b2c; }
+.form-section-title strong { color: #d7e8dc; font-size: 11px; }
+.form-section-title span, .form-help { color: #a0afbb; font-size: 10px; }
+.form-help { margin-top: 11px; }
+.attendance-live { margin: 0 0 15px; padding: 14px; }
+.attendance-live-list { display: grid; gap: 0; margin-top: 8px; }
+.attendance-live-row { display: flex; align-items: center; gap: 15px; min-height: 40px; border-top: 1px solid #2b3843; color: #aebbc6; font-size: 10px; }
+.attendance-live-row > strong { min-width: 130px; color: #dce5ec; }
+.attendance-live-row > span:nth-child(2), .attendance-live-row > span:nth-child(3) { min-width: 90px; }
+.attendance-live-row b { color: #dce5ec; font-weight: 600; }
+.punch-action { color: #90d4ac !important; }
+.punch-action:hover { background: #203b2e !important; color: #bbf0cf !important; }
+.punch-complete { display: grid; width: 30px; height: 30px; place-items: center; color: #90d4ac; }
 
 /* Residents */
 .resident-hero { position: relative; display: flex; justify-content: space-between; overflow: hidden; min-height: 171px; padding: 23px 26px; border: 1px solid #e3eae1; border-radius: 8px; background: linear-gradient(108deg, #edf4ed 0%, #f6f8f2 72%, #f4f4ec 100%); }
@@ -618,13 +631,16 @@
 .floor-plan-summary { display: flex; flex-wrap: wrap; gap: 14px; margin: 13px 0 10px; color: #536d81; font-size: 9px; }
 .floor-plan-summary > span { display: inline-flex; align-items: center; gap: 5px; }
 .room-key { width: 8px; height: 8px; border-radius: 2px; }
-.available-key { background: #2b8750; }.occupied-key { background: #3478bd; }.maintenance-key { background: #cd8b2f; }
+.available-key { background: #2b8750; }.occupied-key { background: #3478bd; }.booked-key { background: #8456c5; }.reserved-key { background: #cf8a2e; }.cleaning-key { background: #d06a46; }.maintenance-key { background: #7d8791; }
 .room-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(65px, 1fr)); gap: 7px; }
 .room-tile { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; min-height: 52px; padding: 7px 8px; border: 1px solid; border-radius: 5px; text-align: left; transition: transform .14s, box-shadow .14s; }
 .room-tile strong { font-size: 10px; font-weight: 700; }
 .room-tile span { margin-top: 4px; font-size: 8px; }
 .room-tile.available { border-color: #b7ddc1; background: #e8f7ed; color: #236a3a; }
 .room-tile.occupied { border-color: #bfd7ec; background: #e9f3fc; color: #235d8f; }
+.room-tile.booked { border-color: #d1bced; background: #f0e9fa; color: #60428c; }
+.room-tile.reserved { border-color: #ecd3aa; background: #fff4e3; color: #8c5c1e; }
+.room-tile.needs-cleaning, .room-tile.cleaning { border-color: #efc3b0; background: #fff0e9; color: #9e4f30; }
 .room-tile.maintenance, .room-tile.blocked { border-color: #ecd3aa; background: #fff4e3; color: #8c5c1e; }
 .room-tile:hover { transform: translateY(-2px); box-shadow: 0 5px 12px #17314b1c; }
 .reports-panel-title, .reports-panel-subtitle { display: block; }
@@ -966,6 +982,14 @@ body, #root { font-size: 15px; }
 .floor-plan-heading p, .floor-plan-summary { color: #a1afbb; }
 .floor-building { border-color: #364550; background: #1c2731; color: #d3dde5; }
 .room-tile { border-color: #35434f; background: #202b35; color: #d4dee6; }
+.room-tile.booked { border-color: #59477a; background: #2d263c; color: #d0b8f0; }
+.room-tile.reserved { border-color: #705432; background: #352e22; color: #e8c98e; }
+.room-tile.needs-cleaning, .room-tile.cleaning { border-color: #754736; background: #382720; color: #efb397; }
+.room-tile.maintenance, .room-tile.blocked { border-color: #4a5660; background: #26313a; color: #bcc7d0; }
+.room-tile.available { border-color: #3b644d; background: #20352a; color: #a6d9b8; }
+.room-tile.occupied { border-color: #3a5a75; background: #223141; color: #a6cfee; }
+.room-key.booked-key { background: #9b75d1; }.room-key.reserved-key { background: #e0ad5d; }.room-key.cleaning-key { background: #e48762; }.room-key.maintenance-key { background: #7d8992; }
+.attendance-live-row { border-top-color: #2b3843; }
 .room-tile.needs.cleaning, .room-tile.cleaning { border-color: #735a36; background: #352e22; color: #e8c98e; }
 .room-tile.maintenance, .room-tile.blocked { border-color: #735a36; background: #352e22; color: #e8c98e; }
 .status-badge.success { background: #203b2e; color: #a6d9b8; }

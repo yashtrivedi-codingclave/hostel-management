@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { BrowserRouter, Link, Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowDownToLine, ArrowLeftRight, ArrowUpRight, Bell, BedDouble, Building2, CalendarDays,
   Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, ClipboardCheck, CreditCard,
-  DoorOpen, Download, Ellipsis, FileText, LayoutDashboard, LogOut, Menu, Plus,
+  DoorOpen, Download, Ellipsis, Eye, FileText, LayoutDashboard, LogIn, LogOut,
+  Menu, Pencil, Plus, Trash2,
   Search, Settings, ShieldCheck, SlidersHorizontal, Sparkles, Users, X, type LucideIcon,
 } from 'lucide-react'
 import {
@@ -14,7 +15,7 @@ import { db, type Account, type ModuleKey, type RecordItem, type Role } from './
 import { getModule, modules, roleLabel, type FieldConfig, type ModuleConfig } from './lib/modules'
 import {
   createRecord, deleteRecord, exportBackup, getSettings, importBackup, initializeData,
-  listRecords, resetDemoData, updateRecord, updateSetting,
+  listRecords, punchAttendance, resetDemoData, updateRecord, updateSetting,
 } from './lib/service'
 import { useAuth } from './lib/store'
 import './App.css'
@@ -44,16 +45,16 @@ const permissionKey = 'haven-demo-permissions'
 
 function hasPermission(role: Role, module: ModuleConfig, action: Permission) {
   if (role === 'admin') return true
-  const saved = localStorage.getItem(permissionKey)
-  const overrides = saved ? JSON.parse(saved) as PermissionMap : {}
-  const override = overrides[role]?.[module.key]?.[action]
   const receptionistAccess = role === 'receptionist' &&
     ['guests', 'bookings', 'attendance', 'visitors'].includes(module.key) &&
     ['view', 'add', 'edit'].includes(action)
   const housekeepingAccess = role === 'housekeeping' && module.key === 'housekeeping' &&
     ['view', 'edit'].includes(action)
-  return override ?? (receptionistAccess || housekeepingAccess ||
-    (module.roles.includes(role) && (action === 'view' || module.key === 'complaints' || module.key === 'leave')))
+  if (receptionistAccess || housekeepingAccess) return true
+  const saved = localStorage.getItem(permissionKey)
+  const overrides = saved ? JSON.parse(saved) as PermissionMap : {}
+  const override = overrides[role]?.[module.key]?.[action]
+  return override ?? (module.roles.includes(role) && (action === 'view' || module.key === 'complaints' || module.key === 'leave'))
 }
 
 function usePageTitle(title: string) {
@@ -299,14 +300,16 @@ type DashboardData = {
   bookings: RecordItem[]
   payments: RecordItem[]
   expenses: RecordItem[]
+  attendanceToday: RecordItem[]
 }
 
 function useDashboardData() {
-  const [data, setData] = useState<DashboardData>({ studentCount: 0, guestCount: 0, roomCount: 0, rooms: [], beds: 0, occupied: 0, bookings: [], payments: [], expenses: [] })
+  const [data, setData] = useState<DashboardData>({ studentCount: 0, guestCount: 0, roomCount: 0, rooms: [], beds: 0, occupied: 0, bookings: [], payments: [], expenses: [], attendanceToday: [] })
   const refresh = useCallback(async () => {
     const records = await db.records.toArray()
     const ofType = (type: ModuleKey) => records.filter((record) => record.type === type)
     const rooms = ofType('rooms')
+    const today = localDateKey(new Date())
     setData({
       studentCount: ofType('students').filter((record) => record.status === 'Active').length,
       guestCount: ofType('guests').filter((record) => record.status !== 'Checked out').length,
@@ -317,9 +320,14 @@ function useDashboardData() {
       bookings: ofType('bookings'),
       payments: ofType('payments'),
       expenses: ofType('expenses'),
+      attendanceToday: ofType('attendance').filter((record) => record.date === today),
     })
   }, [])
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    void refresh()
+    window.addEventListener('haven-data-changed', refresh)
+    return () => window.removeEventListener('haven-data-changed', refresh)
+  }, [refresh])
   return { data, refresh }
 }
 
@@ -411,9 +419,10 @@ function Dashboard({ account }: { account: Account }) {
       <div className="dashboard-page">
         <div className="page-heading"><div><div className="eyebrow muted">STAFF WORKSPACE</div><h1>Welcome, {account.name.split(' ')[0]}</h1><p>{account.role === 'receptionist' ? 'Record resident arrivals and departures, and manage guest check-ins.' : 'Update room cleaning progress so the admin knows which rooms are ready.'}</p></div></div>
         <section className="metric-grid">
-          <MetricCard title={account.role === 'receptionist' ? 'Guest check-ins' : 'Rooms to clean'} value={account.role === 'receptionist' ? data.guestCount.toString() : data.rooms.filter((room) => ['Needs cleaning', 'Cleaning'].includes(String(room.status))).length.toString()} note={account.role === 'receptionist' ? 'Current guest stays' : 'Pending or in progress'} icon={account.role === 'receptionist' ? DoorOpen : Sparkles} tint="sage" onClick={() => navigate(account.role === 'receptionist' ? '/module/guests' : '/module/housekeeping')} />
+          <MetricCard title={account.role === 'receptionist' ? 'Punched in today' : 'Rooms to clean'} value={account.role === 'receptionist' ? data.attendanceToday.filter((record) => record.checkIn && !record.checkOut).length.toString() : data.rooms.filter((room) => ['Needs cleaning', 'Cleaning'].includes(String(room.status))).length.toString()} note={account.role === 'receptionist' ? `${data.attendanceToday.length} resident punches today` : 'Pending or in progress'} icon={account.role === 'receptionist' ? DoorOpen : Sparkles} tint="sage" onClick={() => navigate(account.role === 'receptionist' ? '/module/attendance' : '/module/housekeeping')} />
           <MetricCard title="Bookings" value={data.bookings.filter((booking) => ['Pending', 'Confirmed'].includes(String(booking.status))).length.toString()} note="Upcoming and pending" icon={CalendarDays} tint="blue" onClick={() => navigate('/module/bookings')} />
         </section>
+        {account.role === 'receptionist' && <AttendanceLive records={data.attendanceToday} />}
         <button className="button button-primary" onClick={() => navigate(`/module/${primaryModule}`)}>{primaryLabel}<ArrowUpRight size={15} /></button>
       </div>
     )
@@ -436,6 +445,7 @@ function Dashboard({ account }: { account: Account }) {
         <MetricCard title="Room occupancy" value={`${occupancyRate}%`} note={`${data.occupied} of ${data.beds} beds`} positive icon={BedDouble} tint="blue" onClick={() => navigate('/module/rooms')} />
         <MetricCard title={`Revenue · ${range.toLowerCase()}`} value={currency(monthlyRevenue)} note={`${pendingPayments} pending payments`} positive icon={CreditCard} tint="rose" onClick={() => navigate('/module/payments')} />
       </section>
+      <AttendanceLive records={data.attendanceToday} />
       <section className="dashboard-grid">
         <div className="panel revenue-panel">
           <div className="panel-heading"><div><h2>Financial overview</h2><p>Income and expenses over time · {range.toLowerCase()}</p></div><button className="select-button" onClick={() => navigate('/module/expenses')}>This year <ChevronDown size={14} /></button></div>
@@ -469,6 +479,14 @@ function MetricCard({ title, value, note, positive, icon: Icon, tint, onClick }:
   return <button className="metric-card" onClick={onClick}><div className="metric-top"><span>{title}</span><span className={`metric-icon ${tint}`}><Icon size={17} /></span></div><strong className="metric-value">{value}</strong><div className="metric-note">{positive && <span className="trend-up"><ArrowUpRight size={12} /></span>}{note}</div><span className="metric-arrow"><ArrowUpRight size={15} /></span></button>
 }
 
+function AttendanceLive({ records }: { records: RecordItem[] }) {
+  const sorted = [...records].sort((a, b) => String(b.checkIn ?? '').localeCompare(String(a.checkIn ?? '')))
+  return <section className="panel attendance-live">
+    <div className="panel-heading"><div><h2>Today’s attendance</h2><p>Live punch-in and punch-out register</p></div><StatusBadge status={`${records.filter((record) => record.checkIn && !record.checkOut).length} currently in`} /></div>
+    {sorted.length ? <div className="attendance-live-list">{sorted.slice(0, 6).map((record) => <div className="attendance-live-row" key={record.id}><strong>{String(record.resident)}</strong><span>In <b>{String(record.checkIn || '—')}</b></span><span>Out <b>{String(record.checkOut || '—')}</b></span><StatusBadge status={String(record.status)} /></div>)}</div> : <EmptyState title="No punches recorded today" description="Reception punch-ins will appear here as soon as they are recorded." />}
+  </section>
+}
+
 function ResidentDashboard({ account, profile, isStudent }: { account: Account; profile?: RecordItem; isStudent: boolean }) {
   const navigate = useNavigate()
   const ownRecords = useCallback(async (type: ModuleKey) => {
@@ -478,12 +496,18 @@ function ResidentDashboard({ account, profile, isStudent }: { account: Account; 
   const [myComplaints, setMyComplaints] = useState<RecordItem[]>([])
   const [announcements, setAnnouncements] = useState<RecordItem[]>([])
   const [myLeave, setMyLeave] = useState<RecordItem[]>([])
+  const [myAttendance, setMyAttendance] = useState<RecordItem[]>([])
   useEffect(() => {
-    void Promise.all([ownRecords('complaints'), ownRecords('notifications'), ownRecords('leave')]).then(([complaints, notices, leave]) => {
+    async function refreshResidentRecords() {
+      const [complaints, notices, leave, attendance] = await Promise.all([ownRecords('complaints'), ownRecords('notifications'), ownRecords('leave'), ownRecords('attendance')])
       setMyComplaints(complaints)
       setAnnouncements(notices.filter((notice) => notice.ownerEmail === account.email || ['All residents', isStudent ? 'Students' : 'Guests'].includes(String(notice.audience))))
       setMyLeave(leave)
-    })
+      setMyAttendance(attendance.sort((a, b) => String(b.date).localeCompare(String(a.date))).slice(0, 5))
+    }
+    void refreshResidentRecords()
+    window.addEventListener('haven-data-changed', refreshResidentRecords)
+    return () => window.removeEventListener('haven-data-changed', refreshResidentRecords)
   }, [account.email, ownRecords, isStudent])
 
   return (
@@ -493,7 +517,7 @@ function ResidentDashboard({ account, profile, isStudent }: { account: Account; 
         <div className="resident-hero-copy"><span className="resident-chip">{isStudent ? 'STUDENT RESIDENT' : 'GUEST STAY'}</span><h2>{profile?.fullName ?? account.name}</h2><p>{isStudent ? String(profile?.course ?? 'Resident') : `${String(profile?.nationality ?? 'Guest')} · ${String(profile?.bookingReference ?? 'Your stay')}`}</p><div className="resident-room"><BedDouble size={16} /><span>Room <strong>{profile?.room ?? '—'}</strong></span><i /><span>{isStudent ? `Bed ${profile?.bed ?? '—'}` : `Departure ${profile?.departure ?? '—'}`}</span></div></div>
         <div className="resident-house-art"><span>⌂</span><small>YOUR SPACE, YOUR PLACE</small></div>
       </section>
-      <section className="resident-metrics"><div className="resident-stat"><span className="metric-icon sage"><BedDouble size={17} /></span><small>{isStudent ? 'MONTHLY FEE' : 'STAY STATUS'}</small><strong>{isStudent ? currency(Number(profile?.monthlyFee ?? 0)) : String(profile?.status ?? 'Reserved')}</strong><span>{isStudent ? 'Due on the 1st of each month' : `Arrival ${profile?.arrival ?? '—'}`}</span></div><div className="resident-stat"><span className="metric-icon sand"><CalendarDays size={17} /></span><small>{isStudent ? 'ATTENDANCE' : 'BOOKING REFERENCE'}</small><strong>{isStudent ? 'View attendance' : String(profile?.bookingReference ?? '—')}</strong><span>{isStudent ? 'Your recent activity' : 'Keep this handy at check-in'}</span></div><div className="resident-stat"><span className="metric-icon blue"><Bell size={17} /></span><small>OPEN REQUESTS</small><strong>{myComplaints.filter((item) => item.status !== 'Resolved').length}</strong><span>{myLeave.length} leave applications</span></div></section>
+      <section className="resident-metrics"><div className="resident-stat"><span className="metric-icon sage"><BedDouble size={17} /></span><small>{isStudent ? 'MONTHLY FEE' : 'STAY STATUS'}</small><strong>{isStudent ? currency(Number(profile?.monthlyFee ?? 0)) : String(profile?.status ?? 'Reserved')}</strong><span>{isStudent ? 'Due on the 1st of each month' : `Arrival ${profile?.arrival ?? '—'}`}</span></div><div className="resident-stat"><span className="metric-icon sand"><CalendarDays size={17} /></span><small>{isStudent ? 'LATEST ATTENDANCE' : 'BOOKING REFERENCE'}</small><strong>{isStudent ? (myAttendance[0]?.checkIn ? `Punched in ${myAttendance[0].checkIn}` : 'No punch recorded') : String(profile?.bookingReference ?? '—')}</strong><span>{isStudent ? `${myAttendance[0]?.date ?? 'Today'} · ${myAttendance[0]?.status ?? 'Awaiting check-in'}` : 'Keep this handy at check-in'}</span></div><div className="resident-stat"><span className="metric-icon blue"><Bell size={17} /></span><small>OPEN REQUESTS</small><strong>{myComplaints.filter((item) => item.status !== 'Resolved').length}</strong><span>{myLeave.length} leave applications</span></div></section>
       <section className="dashboard-grid resident-grid"><div className="panel"><div className="panel-heading"><div><h2>Useful links</h2><p>Manage your hostel stay</p></div></div><div className="portal-link-grid">{(isStudent ? ['leave', 'attendance', 'mess', 'complaints'] : ['bookings', 'payments', 'complaints', 'notifications']).map((key) => { const module = getModule(key); if (!module) return null; const Icon = iconMap[module.icon] ?? FileText; return <button key={key} onClick={() => navigate(`/module/${key}`)}><span className="quick-icon sage"><Icon size={17} /></span><strong>{module.label}</strong><ArrowUpRight size={14} /></button> })}</div></div><div className="panel"><div className="panel-heading"><div><h2>House announcements</h2><p>Updates from your hostel team</p></div></div><div className="notice-list">{announcements.length ? announcements.slice(0, 3).map((notice) => <article key={notice.id}><span className="notice-icon"><Bell size={15} /></span><div><strong>{notice.title}</strong><p>{notice.message}</p><small>{notice.date}</small></div></article>) : <EmptyState title="No announcements yet" description="New updates will appear here." />}</div></div></section>
       <div className="demo-banner"><ShieldCheck size={15} /><span>Your privacy matters</span><i /> You can only access information associated with your account. This is a local demo.</div>
     </div>
@@ -550,6 +574,10 @@ function ModulePage({ account }: { account: Account }) {
   }, [account.email, account.role, module])
 
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    window.addEventListener('haven-data-changed', refresh)
+    return () => window.removeEventListener('haven-data-changed', refresh)
+  }, [refresh])
 
   const visibleItems = useMemo(() => {
     let result = items.filter((item) => {
@@ -593,6 +621,16 @@ function ModulePage({ account }: { account: Account }) {
     }
     setFormMode(null)
     await refresh()
+  }
+
+  async function handlePunch(resident: string, direction: 'in' | 'out') {
+    try {
+      await punchAttendance(resident, direction)
+      toast.success(`${resident} punched ${direction} at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`)
+      await refresh()
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Attendance could not be recorded.')
+    }
   }
 
   async function removeRecord(record: RecordItem) {
@@ -657,10 +695,15 @@ function ModulePage({ account }: { account: Account }) {
     <section className="module-page">
       <div className="page-heading module-heading"><div><div className="eyebrow muted">PROPERTY MANAGEMENT</div><h1>{module.label}</h1><p>{module.description}</p></div>{canAdd && <button className="button button-primary" onClick={() => openForm('create')}><Plus size={16} /> Add {module.singular}</button>}</div>
       {module.key === 'rooms' && <RoomFloorPlan rooms={items} buildingFilter={buildingFilter} setBuildingFilter={setBuildingFilter} onSelect={(room) => openForm('view', room)} />}
+      {module.key === 'attendance' && <AttendanceLive records={items.filter((record) => record.date === localDateKey(new Date()))} />}
       <div className="panel table-panel">
         <div className="table-toolbar"><div className="table-toolbar-left"><label className="table-search"><Search size={16} /><input aria-label={`Search ${module.label}`} placeholder={`Search ${module.label.toLowerCase()}...`} value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} /></label><select aria-label="Filter by status" className="filter-select" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1) }}><option>All status</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></div><div className="table-toolbar-right">{selected.length > 0 && <button className="button button-danger subtle-button" onClick={() => void bulkDelete()}><X size={14} /> Delete {selected.length}</button>}<button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export CSV</button><button className="icon-button filter-button" aria-label="Filter options" onClick={() => toast.info('Use the search and status filters to narrow this list.')}><SlidersHorizontal size={16} /></button></div></div>
         <div className="table-scroll"><table className="data-table"><thead><tr>{selectable && <th className="check-col"><input type="checkbox" aria-label="Select all rows" checked={pageItems.length > 0 && pageItems.every((item) => selected.includes(item.id))} onChange={(event) => setSelected(event.target.checked ? [...new Set([...selected, ...pageItems.map((item) => item.id)])] : selected.filter((id) => !pageItems.some((item) => item.id === id)))} /></th>}{fields.slice(0, 5).map((field) => <th key={field.key}><button className="sort-button" onClick={() => { setSortAsc(sortKey === field.key ? !sortAsc : true); setSortKey(field.key) }}>{field.label}{sortKey === field.key && <span>{sortAsc ? '↑' : '↓'}</span>}</button></th>)}<th>Status</th><th className="actions-heading">ACTIONS</th></tr></thead><tbody>
-          {loading ? <tr><td colSpan={fields.length + 3} className="table-message"><div className="loading-spinner" /> Loading records…</td></tr> : pageItems.map((record) => <tr key={record.id}>{selectable && <td><input type="checkbox" aria-label={`Select ${String(record[fields[0]?.key] ?? 'record')}`} checked={selected.includes(record.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, record.id] : selected.filter((id) => id !== record.id))} /></td>}{fields.slice(0, 5).map((field, index) => <td key={field.key}>{index === 0 ? <button className="table-primary-cell" onClick={() => openForm('view', record)}>{String(record[field.key] ?? '—')}</button> : <span className={field.type === 'number' ? 'tabular' : ''}>{field.key === 'amount' || field.key === 'price' || field.key === 'monthlyFee' || field.key === 'salary' ? currency(Number(record[field.key] ?? 0)) : String(record[field.key] ?? '—')}</span>}</td>)}<td><StatusBadge status={String(record.status ?? 'Recorded')} /></td><td><div className="row-actions"><button aria-label={`View ${module.singular}`} onClick={() => openForm('view', record)}><FileText size={15} /></button>{canEdit && (account.role === 'admin' || account.role === 'receptionist' || account.role === 'housekeeping' || record.ownerEmail === account.email) && <button aria-label={`Edit ${module.singular}`} onClick={() => openForm('edit', record)}><SlidersHorizontal size={14} /></button>}{canDelete && (account.role === 'admin' || record.ownerEmail === account.email) && <button className="row-delete" aria-label={`Delete ${module.singular}`} onClick={() => void removeRecord(record)}><X size={15} /></button>}</div></td></tr>)}
+          {loading ? <tr><td colSpan={fields.length + 3} className="table-message"><div className="loading-spinner" /> Loading records…</td></tr> : pageItems.map((record) => {
+            const todayPunch = items.find((item) => item.type === 'attendance' && item.resident === record.resident && item.date === localDateKey(new Date()))
+            const punchDirection = todayPunch?.checkIn ? todayPunch.checkOut ? null : 'out' : 'in'
+            return <tr key={record.id}>{selectable && <td><input type="checkbox" aria-label={`Select ${String(record[fields[0]?.key] ?? 'record')}`} checked={selected.includes(record.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, record.id] : selected.filter((id) => id !== record.id))} /></td>}{fields.slice(0, 5).map((field, index) => <td key={field.key}>{index === 0 ? <button className="table-primary-cell" onClick={() => openForm('view', record)}>{String(record[field.key] ?? '—')}</button> : <span className={field.type === 'number' ? 'tabular' : ''}>{field.key === 'amount' || field.key === 'price' || field.key === 'monthlyFee' || field.key === 'salary' ? currency(Number(record[field.key] ?? 0)) : String(record[field.key] ?? '—')}</span>}</td>)}<td><StatusBadge status={String(record.status ?? 'Recorded')} /></td><td><div className="row-actions"><button aria-label={`View ${module.singular}`} title="View details" onClick={() => openForm('view', record)}><Eye size={15} /></button>{canEdit && (account.role === 'admin' || account.role === 'receptionist' || account.role === 'housekeeping' || record.ownerEmail === account.email) && <button aria-label={`Edit ${module.singular}`} title="Edit record" onClick={() => openForm('edit', record)}><Pencil size={15} /></button>}{module.key === 'attendance' && canEdit && punchDirection && <button className="punch-action" aria-label={`${punchDirection === 'in' ? 'Punch in' : 'Punch out'} ${String(record.resident)}`} title={punchDirection === 'in' ? 'Punch in now' : 'Punch out now'} onClick={() => void handlePunch(String(record.resident), punchDirection)}>{punchDirection === 'in' ? <LogIn size={15} /> : <LogOut size={15} />}</button>}{module.key === 'attendance' && todayPunch?.checkOut && <span className="punch-complete" title="Attendance completed today"><Check size={14} /></span>}{canDelete && (account.role === 'admin' || record.ownerEmail === account.email) && <button className="row-delete" aria-label={`Delete ${module.singular}`} title="Delete record" onClick={() => void removeRecord(record)}><Trash2 size={15} /></button>}</div></td></tr>
+          })}
           {!loading && pageItems.length === 0 && <tr><td colSpan={fields.length + 3}><EmptyState title={query || statusFilter !== 'All status' ? 'No matching records' : `No ${module.label.toLowerCase()} yet`} description={query || statusFilter !== 'All status' ? 'Try another search or clear the status filter.' : `Add a ${module.singular} to get started.`} action={canAdd && !query ? <button className="button button-secondary" onClick={() => openForm('create')}><Plus size={15} /> Add {module.singular}</button> : undefined} /></td></tr>}
         </tbody></table></div>
         <div className="table-pagination"><span>Showing <strong>{visibleItems.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, visibleItems.length)}</strong> of <strong>{visibleItems.length}</strong> records</span><div className="pagination-controls"><span>Rows per page</span><select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1) }} aria-label="Rows per page"><option value={8}>8</option><option value={15}>15</option><option value={30}>30</option></select><button aria-label="Previous page" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft size={15} /></button><span className="page-count">{page} / {totalPages}</span><button aria-label="Next page" disabled={page >= totalPages} onClick={() => setPage(page + 1)}><ChevronRight size={15} /></button></div></div>
@@ -672,15 +715,36 @@ function ModulePage({ account }: { account: Account }) {
 }
 
 function RoomFloorPlan({ rooms, buildingFilter, setBuildingFilter, onSelect }: { rooms: RecordItem[]; buildingFilter: string; setBuildingFilter: (building: string) => void; onSelect: (room: RecordItem) => void }) {
+  const [bookings, setBookings] = useState<RecordItem[]>([])
+  const refreshBookings = useCallback(async () => setBookings(await listRecords('bookings')), [])
+  useEffect(() => {
+    void refreshBookings()
+    window.addEventListener('haven-data-changed', refreshBookings)
+    return () => window.removeEventListener('haven-data-changed', refreshBookings)
+  }, [refreshBookings])
   const buildings = [...new Set(rooms.map((room) => String(room.building ?? 'Unassigned')))]
   const visibleRooms = rooms.filter((room) => buildingFilter === 'All buildings' || room.building === buildingFilter)
-  const available = visibleRooms.filter((room) => room.status === 'Available').length
-  const occupied = visibleRooms.filter((room) => room.status === 'Occupied').length
-  const maintenance = visibleRooms.filter((room) => ['Maintenance', 'Blocked'].includes(String(room.status))).length
+  const today = localDateKey(new Date())
+  const roomState = (room: RecordItem) => {
+    if (['Maintenance', 'Blocked', 'Needs cleaning', 'Cleaning'].includes(String(room.status))) return String(room.status)
+    const active = bookings.filter((booking) => String(booking.room) === String(room.roomNumber) &&
+      ['Pending', 'Confirmed'].includes(String(booking.status)) && String(booking.checkOut ?? '') >= today)
+    if (active.some((booking) => booking.status === 'Confirmed')) return 'Booked'
+    if (active.some((booking) => booking.status === 'Pending')) return 'Reserved'
+    if (Number(room.occupied ?? 0) > 0 || room.status === 'Occupied') return 'Occupied'
+    return String(room.status)
+  }
+  const classifiedRooms = visibleRooms.map((room) => ({ room, state: roomState(room) }))
+  const available = classifiedRooms.filter(({ state }) => state === 'Available').length
+  const occupied = classifiedRooms.filter(({ state }) => state === 'Occupied').length
+  const booked = classifiedRooms.filter(({ state }) => state === 'Booked').length
+  const reserved = classifiedRooms.filter(({ state }) => state === 'Reserved').length
+  const cleaning = classifiedRooms.filter(({ state }) => ['Needs cleaning', 'Cleaning'].includes(state)).length
+  const maintenance = classifiedRooms.filter(({ state }) => ['Maintenance', 'Blocked'].includes(state)).length
   return <section className="panel floor-plan">
     <div className="floor-plan-heading"><div><span className="eyebrow muted">AT A GLANCE</span><h2>Room floor plan</h2><p>Select a room to view its occupancy and facilities.</p></div><label className="floor-building"><Building2 size={14} /><select aria-label="Filter floor plan by building" value={buildingFilter} onChange={(event) => setBuildingFilter(event.target.value)}><option>All buildings</option>{buildings.map((building) => <option key={building}>{building}</option>)}</select><ChevronDown size={13} /></label></div>
-    <div className="floor-plan-summary"><span><i className="room-key available-key" />{available} available</span><span><i className="room-key occupied-key" />{occupied} occupied</span><span><i className="room-key maintenance-key" />{maintenance} maintenance / blocked</span></div>
-    <div className="room-grid">{visibleRooms.map((room) => <button key={room.id} className={`room-tile ${String(room.status).toLowerCase()}`} title={`${room.roomNumber} · ${room.status} · ${room.occupied}/${room.capacity} beds`} onClick={() => onSelect(room)}><strong>{room.roomNumber}</strong><span>{room.occupied}/{room.capacity} beds</span></button>)}</div>
+    <div className="floor-plan-summary"><span><i className="room-key available-key" />{available} available</span><span><i className="room-key occupied-key" />{occupied} occupied</span><span><i className="room-key booked-key" />{booked} booked</span><span><i className="room-key reserved-key" />{reserved} reserved</span><span><i className="room-key cleaning-key" />{cleaning} cleaning</span><span><i className="room-key maintenance-key" />{maintenance} maintenance / blocked</span></div>
+    <div className="room-grid">{classifiedRooms.map(({ room, state }) => <button key={room.id} className={`room-tile ${state.toLowerCase().replaceAll(' ', '-')}`} title={`${room.roomNumber} · ${state} · ${room.occupied}/${room.capacity} beds`} onClick={() => onSelect(room)}><strong>{room.roomNumber}</strong><span>{state} · {room.occupied}/{room.capacity}</span></button>)}</div>
   </section>
 }
 
@@ -704,7 +768,24 @@ function RecordDialog({ module, mode, record, onClose, onSave }: { module: Modul
   const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(module.fields.map((field) => [field.key, String(record?.[field.key] ?? (field.type === 'date' && mode === 'create' ? new Date().toISOString().slice(0, 10) : ''))])))
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
+  const [rooms, setRooms] = useState<RecordItem[]>([])
+  const [residents, setResidents] = useState<RecordItem[]>([])
   const isView = mode === 'view'
+
+  useEffect(() => {
+    if (module.key === 'guests') {
+      void listRecords('rooms').then(setRooms).catch((issue: unknown) => toast.error(issue instanceof Error ? issue.message : 'Rooms could not be loaded.'))
+    }
+    if (module.key === 'attendance') {
+      void Promise.all([listRecords('students'), listRecords('guests')])
+        .then(([students, guests]) => setResidents([...students, ...guests]))
+        .catch((issue: unknown) => toast.error(issue instanceof Error ? issue.message : 'Residents could not be loaded.'))
+    }
+  }, [module.key])
+
+  const selectedRoom = rooms.find((room) => String(room.roomNumber) === values.room)
+  const luxuryRoom = selectedRoom && ['premium', 'deluxe', 'luxury'].includes(String(selectedRoom.category).toLowerCase())
+  const mealFields = new Set(['foodService', 'mealPreferences', 'mealTimes', 'teaCoffee', 'teaCoffeeTime'])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -720,13 +801,32 @@ function RecordDialog({ module, mode, record, onClose, onSave }: { module: Modul
   }
 
   function inputField(field: FieldConfig) {
-    const common = { id: field.key, value: values[field.key] ?? '', disabled: isView, required: field.required, onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => setValues((current) => ({ ...current, [field.key]: event.target.value })) }
+    const common = { id: field.key, value: values[field.key] ?? '', disabled: isView, readOnly: field.autoGenerated, required: field.required, onChange: (event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+      const value = event.target.value
+      setValues((current) => {
+        const next = { ...current, [field.key]: value }
+        if (module.key === 'guests' && field.key === 'room') {
+          const room = rooms.find((item) => String(item.roomNumber) === value)
+          if (!['premium', 'deluxe', 'luxury'].includes(String(room?.category).toLowerCase())) {
+            for (const key of mealFields) next[key] = ''
+          }
+        }
+        return next
+      })
+    } }
+    if (module.key === 'guests' && field.key === 'room') {
+      return <select {...common}><option value="">Select a room…</option>{rooms.map((room) => <option value={String(room.roomNumber)} key={room.id}>{String(room.roomNumber)} · {String(room.category)} · {String(room.status)}</option>)}</select>
+    }
+    if (module.key === 'attendance' && field.key === 'resident') {
+      const names = [...new Set(residents.map((resident) => String(resident.fullName ?? '')).filter(Boolean))]
+      return <select {...common}><option value="">Select resident…</option>{values.resident && !names.includes(values.resident) && <option value={values.resident}>{values.resident} · existing record</option>}{names.map((name) => <option key={name}>{name}</option>)}</select>
+    }
     if (field.type === 'select') return <select {...common}><option value="">Select…</option>{field.options?.map((option) => <option key={option}>{option}</option>)}</select>
     if (field.type === 'textarea') return <textarea {...common} rows={3} />
-    return <input {...common} type={field.type ?? 'text'} min={field.type === 'number' ? 0 : undefined} />
+    return <input {...common} placeholder={field.autoGenerated && mode === 'create' ? 'Generated automatically when saved' : undefined} type={field.type ?? 'text'} min={field.type === 'number' ? 0 : undefined} />
   }
 
-  return <div className="dialog-scrim" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="record-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div className="dialog-heading"><div><div className="eyebrow muted">{mode === 'view' ? 'RECORD DETAILS' : mode === 'edit' ? 'UPDATE RECORD' : 'NEW ENTRY'}</div><h2 id="dialog-title">{mode === 'view' ? `View ${module.singular}` : `${mode === 'edit' ? 'Edit' : 'Add'} ${module.singular}`}</h2></div><button className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={18} /></button></div><form onSubmit={(event) => void submit(event)}><div className="dialog-fields">{module.fields.map((field) => <label className={`form-label ${field.type === 'textarea' ? 'form-wide' : ''}`} key={field.key} htmlFor={field.key}>{field.label}{inputField(field)}</label>)}</div>{error && <div className="form-error">{error}</div>}<div className="dialog-footer"><button type="button" className="button button-secondary" onClick={onClose}>{isView ? 'Close' : 'Cancel'}</button>{!isView && <button className="button button-primary" disabled={saving}>{saving ? 'Saving…' : mode === 'edit' ? 'Save changes' : `Create ${module.singular}`}<Check size={15} /></button>}</div></form></section></div>
+  return <div className="dialog-scrim" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><section className="record-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title"><div className="dialog-heading"><div><div className="eyebrow muted">{mode === 'view' ? 'RECORD DETAILS' : mode === 'edit' ? 'UPDATE RECORD' : 'NEW ENTRY'}</div><h2 id="dialog-title">{mode === 'view' ? `View ${module.singular}` : `${mode === 'edit' ? 'Edit' : 'Add'} ${module.singular}`}</h2></div><button className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={18} /></button></div><form onSubmit={(event) => void submit(event)}><div className="dialog-fields">{module.fields.filter((field) => !mealFields.has(field.key) || luxuryRoom).map((field) => <React.Fragment key={field.key}>{module.key === 'guests' && field.key === 'foodService' && <div className="form-section-title form-wide"><strong>Luxury room food service</strong><span>Set meal preferences and the preferred service times for this guest.</span></div>}<label className={`form-label ${field.type === 'textarea' ? 'form-wide' : ''}`} htmlFor={field.key}>{field.label}{inputField(field)}</label></React.Fragment>)}</div>{module.fields.some((field) => field.autoGenerated) && mode === 'create' && <p className="form-help">The {module.singular} ID is assigned automatically when this record is saved.</p>}{error && <div className="form-error">{error}</div>}<div className="dialog-footer"><button type="button" className="button button-secondary" onClick={onClose}>{isView ? 'Close' : 'Cancel'}</button>{!isView && <button className="button button-primary" disabled={saving}>{saving ? 'Saving…' : mode === 'edit' ? 'Save changes' : `Create ${module.singular}`}<Check size={15} /></button>}</div></form></section></div>
 }
 
 function SettingsPage({ settings, reload, saving, setSaving }: { settings: { key: string; value: string }[]; reload: () => Promise<void>; saving: boolean; setSaving: (value: boolean) => void }) {

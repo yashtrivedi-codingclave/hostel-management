@@ -25,6 +25,8 @@ Create a production build with `npm run build`.
 New resident accounts created by the admin receive the demo password `Welcome@123`.
 Admins can create reception and housekeeping logins from **Staff → Add employee** by selecting a portal access role. Staff accounts receive the demo password `Welcome@123`. Reception can manage guest stays, attendance, visitors, and bookings. Guest check-out creates a room-cleaning task; housekeeping marks it in progress and then completed to return the room to **Available**.
 
+Reception can punch residents in and out from **Attendance**; the live register is reflected on staff/admin dashboards and each resident's attendance view. Student and guest IDs are generated on creation. Guest registration displays meal preferences and tea/coffee service times for Premium, Deluxe, or Luxury rooms. The room map distinguishes occupied, booked, reserved, cleaning, and maintenance states.
+
 ## Local data and security
 
 IndexedDB stores demo records, accounts, and hostel settings. LocalStorage keeps the current demo session and resident-portal permission preferences. Use **Settings → Demo data** to export or restore a JSON backup, or reset the workspace to its original sample data.

@@ -55,6 +55,11 @@ class HostelDatabase extends Dexie {
       accounts: 'id, &email, role, active',
       settings: 'key',
     })
+    this.version(2).stores({
+      records: 'id, type, status, ownerEmail, createdAt',
+      accounts: 'id, &email, role, active, recordId',
+      settings: 'key',
+    })
   }
 }
 
