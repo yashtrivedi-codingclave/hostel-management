@@ -47,7 +47,13 @@ function hasPermission(role: Role, module: ModuleConfig, action: Permission) {
   const saved = localStorage.getItem(permissionKey)
   const overrides = saved ? JSON.parse(saved) as PermissionMap : {}
   const override = overrides[role]?.[module.key]?.[action]
-  return override ?? (module.roles.includes(role) && (action === 'view' || module.key === 'complaints' || module.key === 'leave'))
+  const receptionistAccess = role === 'receptionist' &&
+    ['guests', 'bookings', 'attendance', 'visitors'].includes(module.key) &&
+    ['view', 'add', 'edit'].includes(action)
+  const housekeepingAccess = role === 'housekeeping' && module.key === 'housekeeping' &&
+    ['view', 'edit'].includes(action)
+  return override ?? (receptionistAccess || housekeepingAccess ||
+    (module.roles.includes(role) && (action === 'view' || module.key === 'complaints' || module.key === 'leave')))
 }
 
 function usePageTitle(title: string) {
@@ -74,7 +80,7 @@ function App() {
 
   return (
     <BrowserRouter>
-      <Toaster position="top-right" richColors />
+      <Toaster position="top-right" richColors theme="dark" />
       <Routes>
         <Route path="/login" element={<LoginPage />} />
         <Route path="*" element={<ProtectedLayout />} />
@@ -85,6 +91,8 @@ function App() {
 
 const demoAccounts = [
   { role: 'Administrator', email: 'admin@hosteldemo.com', password: 'Admin@123', badge: 'Admin' },
+  { role: 'Reception', email: 'reception@hosteldemo.com', password: 'Reception@123', badge: 'Reception' },
+  { role: 'Housekeeping', email: 'housekeeping@hosteldemo.com', password: 'Cleaning@123', badge: 'Housekeeping' },
   { role: 'Student', email: 'student@hosteldemo.com', password: 'Student@123', badge: 'Student' },
   { role: 'Domestic guest', email: 'guest@hosteldemo.com', password: 'Guest@123', badge: 'Guest' },
   { role: 'International guest', email: 'foreign@hosteldemo.com', password: 'Guest@123', badge: 'Foreign' },
@@ -174,8 +182,9 @@ function Workspace({ account }: { account: Account }) {
   const moduleKey = location.pathname.startsWith('/module/') ? location.pathname.split('/')[2] : ''
   const activeModule = getModule(moduleKey)
   const isAdmin = account.role === 'admin'
+  const isOperationsStaff = account.role === 'receptionist' || account.role === 'housekeeping'
   const visibleLinks = modules.filter((module) => module.key !== 'settings' && hasPermission(account.role, module, 'view'))
-  const title = activeModule?.label ?? (isAdmin ? 'Overview' : `${account.role === 'student' ? 'Student' : 'Guest'} dashboard`)
+  const title = activeModule?.label ?? (isAdmin ? 'Overview' : isOperationsStaff ? `${roleLabel[account.role]} dashboard` : `${account.role === 'student' ? 'Student' : 'Guest'} dashboard`)
   usePageTitle(title)
 
   useEffect(() => {
@@ -208,7 +217,7 @@ function Workspace({ account }: { account: Account }) {
       for (const record of records) {
         const module = getModule(record.type)
         if (!module || !hasPermission(account.role, module, 'view')) continue
-        if (account.role !== 'admin' && !['mess', 'notifications'].includes(module.key) && record.ownerEmail !== account.email) continue
+        if (account.role !== 'admin' && !isOperationsStaff && !['mess', 'notifications'].includes(module.key) && record.ownerEmail !== account.email) continue
         if (module.key === 'notifications' && account.role !== 'admin' && record.ownerEmail !== account.email &&
           !['All residents', account.role === 'student' ? 'Students' : 'Guests'].includes(String(record.audience))) continue
         const searchable = module.searchKeys.map((key) => String(record[key] ?? '')).join(' ').toLowerCase()
@@ -218,7 +227,7 @@ function Workspace({ account }: { account: Account }) {
       setSearchResults(results)
     }).catch((error: unknown) => toast.error(error instanceof Error ? error.message : 'Search failed.'))
     return () => { active = false }
-  }, [account.email, account.role, globalQuery])
+  }, [account.email, account.role, globalQuery, isOperationsStaff])
 
   async function toggleNotifications() {
     if (!notificationOpen) {
@@ -248,8 +257,8 @@ function Workspace({ account }: { account: Account }) {
         <Link to="/" className="sidebar-brand"><span className="brand-mark">H</span><span>haven<span className="brand-light">house</span><small>STAY MANAGEMENT</small></span></Link>
         <div className="sidebar-scroll">
           <p className="nav-caption">WORKSPACE</p>
-          <Link to="/" onClick={() => setSidebarOpen(false)} className={`nav-item ${!activeModule ? 'active' : ''}`}><LayoutDashboard size={17} /><span>{isAdmin ? 'Overview' : 'My dashboard'}</span></Link>
-          <p className="nav-caption nav-caption-gap">{isAdmin ? 'MANAGEMENT' : 'MY STAY'}</p>
+          <Link to="/" onClick={() => setSidebarOpen(false)} className={`nav-item ${!activeModule ? 'active' : ''}`}><LayoutDashboard size={17} /><span>{isAdmin ? 'Overview' : isOperationsStaff ? `${roleLabel[account.role]} dashboard` : 'My dashboard'}</span></Link>
+          <p className="nav-caption nav-caption-gap">{isAdmin ? 'MANAGEMENT' : isOperationsStaff ? 'OPERATIONS' : 'MY STAY'}</p>
           {visibleLinks.map((module) => {
             const Icon = iconMap[module.icon] ?? FileText
             return <Link key={module.key} to={`/module/${module.key}`} onClick={() => setSidebarOpen(false)} className={`nav-item ${activeModule?.key === module.key ? 'active' : ''}`}><Icon size={17} /><span>{module.label}</span>{module.key === 'complaints' && <span className="nav-count">2</span>}</Link>
@@ -264,7 +273,7 @@ function Workspace({ account }: { account: Account }) {
       {sidebarOpen && <button className="sidebar-scrim" aria-label="Close navigation" onClick={() => setSidebarOpen(false)} />}
       <main className="main-area">
         <header className="topbar">
-          <div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>{isAdmin ? 'Workspace' : 'Resident portal'}</span><ChevronRight size={14} /><strong>{title}</strong></div></div>
+          <div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}><Menu size={19} /></button><div className="breadcrumbs"><span>{isAdmin || isOperationsStaff ? 'Workspace' : 'Resident portal'}</span><ChevronRight size={14} /><strong>{title}</strong></div></div>
           <div className="topbar-actions"><div className="global-search-wrap"><div className="top-search"><Search size={16} /><input ref={searchInput} value={globalQuery} onFocus={() => { setNotificationOpen(false); setProfileOpen(false); setSearchOpen(true) }} onChange={(event) => { setNotificationOpen(false); setGlobalQuery(event.target.value); setSearchOpen(true) }} onKeyDown={(event) => { if (event.key === 'Enter' && searchResults[0]) openSearchResult(searchResults[0]) }} placeholder="Search residents, rooms..." /><kbd>Ctrl K</kbd></div>{searchOpen && globalQuery.trim().length >= 2 && <div className="search-results">{searchResults.length ? searchResults.map((result) => <button key={`${result.module.key}-${result.record.id}`} onMouseDown={(event) => event.preventDefault()} onClick={() => openSearchResult(result)}><span className="search-result-icon"><Search size={14} /></span><span><strong>{String(result.record[result.module.searchKeys[0]] ?? result.module.label)}</strong><small>{result.module.label} · {result.record.status ?? 'Record'}</small></span><ArrowUpRight size={14} /></button>) : <div className="search-no-results">{globalQuery.trim().length < 2 ? 'Type at least 2 characters' : 'No matching records'}</div>}</div>}{searchOpen && globalQuery.length === 0 && <div className="search-hint"><Search size={13} /> Search across the records you can access</div>}</div><div className="notification-wrap"><button className={`icon-button notification-button ${notificationOpen ? 'selected' : ''}`} aria-label="Notifications" onClick={() => void toggleNotifications()}><Bell size={18} /><i /></button>{notificationOpen && <div className="notification-popover"><div className="notification-heading"><span><strong>Notifications</strong><small>Recent hostel updates</small></span><button onClick={() => { setNotificationOpen(false); navigate('/module/notifications') }}>View all</button></div>{notices.length ? notices.slice(0, 5).map((notice) => <button className="notification-item" key={notice.id} onClick={() => { setNotificationOpen(false); navigate('/module/notifications') }}><span className="notification-icon"><Bell size={14} /></span><span><strong>{notice.title}</strong><small>{notice.message}</small><time>{notice.date}</time></span></button>) : <div className="notification-empty"><Bell size={17} />You’re all caught up.</div>}</div>}</div><div className="topbar-divider" /><div className="profile-wrap"><button className="profile-trigger" onClick={() => { setProfileOpen(!profileOpen); setSearchOpen(false); setNotificationOpen(false) }}><span className="profile-avatar">{account.name.split(' ').map((part) => part[0]).slice(0, 2).join('')}</span><span className="profile-trigger-name"><strong>{account.name}</strong><small>{roleLabel[account.role]}</small></span><ChevronDown size={14} /></button>{profileOpen && <div className="profile-menu"><div className="profile-menu-user"><strong>{account.name}</strong><small>{account.email}</small></div><button onClick={() => { setProfileOpen(false); toast.info('Profile details are available on your dashboard.') }}><Users size={15} /> My profile</button><button onClick={() => signOut()}><LogOut size={15} /> Sign out</button></div>}</div></div>
         </header>
         <div className="page-content">
@@ -284,6 +293,7 @@ type DashboardData = {
   studentCount: number
   guestCount: number
   roomCount: number
+  rooms: RecordItem[]
   beds: number
   occupied: number
   bookings: RecordItem[]
@@ -292,7 +302,7 @@ type DashboardData = {
 }
 
 function useDashboardData() {
-  const [data, setData] = useState<DashboardData>({ studentCount: 0, guestCount: 0, roomCount: 0, beds: 0, occupied: 0, bookings: [], payments: [], expenses: [] })
+  const [data, setData] = useState<DashboardData>({ studentCount: 0, guestCount: 0, roomCount: 0, rooms: [], beds: 0, occupied: 0, bookings: [], payments: [], expenses: [] })
   const refresh = useCallback(async () => {
     const records = await db.records.toArray()
     const ofType = (type: ModuleKey) => records.filter((record) => record.type === type)
@@ -301,6 +311,7 @@ function useDashboardData() {
       studentCount: ofType('students').filter((record) => record.status === 'Active').length,
       guestCount: ofType('guests').filter((record) => record.status !== 'Checked out').length,
       roomCount: rooms.length,
+      rooms,
       beds: rooms.reduce((sum, room) => sum + Number(room.capacity ?? 0), 0),
       occupied: rooms.reduce((sum, room) => sum + Number(room.occupied ?? 0), 0),
       bookings: ofType('bookings'),
@@ -392,6 +403,21 @@ function Dashboard({ account }: { account: Account }) {
     })
   }, [data.expenses, data.payments, range, today])
   const occupancyRate = data.beds ? Math.round((data.occupied / data.beds) * 100) : 0
+
+  if (account.role === 'receptionist' || account.role === 'housekeeping') {
+    const primaryModule = account.role === 'receptionist' ? 'attendance' : 'housekeeping'
+    const primaryLabel = account.role === 'receptionist' ? 'Open attendance register' : 'Open cleaning tasks'
+    return (
+      <div className="dashboard-page">
+        <div className="page-heading"><div><div className="eyebrow muted">STAFF WORKSPACE</div><h1>Welcome, {account.name.split(' ')[0]}</h1><p>{account.role === 'receptionist' ? 'Record resident arrivals and departures, and manage guest check-ins.' : 'Update room cleaning progress so the admin knows which rooms are ready.'}</p></div></div>
+        <section className="metric-grid">
+          <MetricCard title={account.role === 'receptionist' ? 'Guest check-ins' : 'Rooms to clean'} value={account.role === 'receptionist' ? data.guestCount.toString() : data.rooms.filter((room) => ['Needs cleaning', 'Cleaning'].includes(String(room.status))).length.toString()} note={account.role === 'receptionist' ? 'Current guest stays' : 'Pending or in progress'} icon={account.role === 'receptionist' ? DoorOpen : Sparkles} tint="sage" onClick={() => navigate(account.role === 'receptionist' ? '/module/guests' : '/module/housekeeping')} />
+          <MetricCard title="Bookings" value={data.bookings.filter((booking) => ['Pending', 'Confirmed'].includes(String(booking.status))).length.toString()} note="Upcoming and pending" icon={CalendarDays} tint="blue" onClick={() => navigate('/module/bookings')} />
+        </section>
+        <button className="button button-primary" onClick={() => navigate(`/module/${primaryModule}`)}>{primaryLabel}<ArrowUpRight size={15} /></button>
+      </div>
+    )
+  }
 
   if (!isAdmin) {
     return <ResidentDashboard account={account} profile={profile} isStudent={isStudent} />
@@ -506,7 +532,8 @@ function ModulePage({ account }: { account: Account }) {
       if (module.key === 'settings') setSettings(await getSettings())
       else {
         const all = await listRecords(module.key)
-        const safeItems = account.role === 'admin'
+        const isOperationsStaff = account.role === 'receptionist' || account.role === 'housekeeping'
+        const safeItems = account.role === 'admin' || isOperationsStaff
           ? all
           : module.key === 'mess'
             ? all.filter((record) => module.key === 'mess' || ['All residents', account.role === 'student' ? 'Students' : 'Guests'].includes(String(record.audience)))
@@ -549,14 +576,15 @@ function ModulePage({ account }: { account: Account }) {
 
   async function handleSave(values: Record<string, string>) {
     if (!module || !hasPermission(account.role, module, formMode === 'edit' ? 'edit' : 'add')) throw new Error('You do not have permission to make this change.')
-    const ownerEmail = account.role === 'admin' ? undefined : account.email
+    const isOperationsStaff = account.role === 'receptionist' || account.role === 'housekeeping'
+    const ownerEmail = account.role === 'admin' || isOperationsStaff ? undefined : account.email
     const submittedValues = { ...values }
     if (account.role !== 'admin') {
       if (module.key === 'complaints') submittedValues.reportedBy = account.name
       if (module.key === 'leave') submittedValues.resident = account.name
     }
     if (formMode === 'edit' && editing) {
-      if (account.role !== 'admin' && editing.ownerEmail !== account.email) throw new Error('You can only edit your own records.')
+      if (account.role !== 'admin' && !isOperationsStaff && editing.ownerEmail !== account.email) throw new Error('You can only edit your own records.')
       await updateRecord(module, editing.id, submittedValues)
       toast.success(`${module.singular} updated.`)
     } else {
@@ -632,7 +660,7 @@ function ModulePage({ account }: { account: Account }) {
       <div className="panel table-panel">
         <div className="table-toolbar"><div className="table-toolbar-left"><label className="table-search"><Search size={16} /><input aria-label={`Search ${module.label}`} placeholder={`Search ${module.label.toLowerCase()}...`} value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} /></label><select aria-label="Filter by status" className="filter-select" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1) }}><option>All status</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></div><div className="table-toolbar-right">{selected.length > 0 && <button className="button button-danger subtle-button" onClick={() => void bulkDelete()}><X size={14} /> Delete {selected.length}</button>}<button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export CSV</button><button className="icon-button filter-button" aria-label="Filter options" onClick={() => toast.info('Use the search and status filters to narrow this list.')}><SlidersHorizontal size={16} /></button></div></div>
         <div className="table-scroll"><table className="data-table"><thead><tr>{selectable && <th className="check-col"><input type="checkbox" aria-label="Select all rows" checked={pageItems.length > 0 && pageItems.every((item) => selected.includes(item.id))} onChange={(event) => setSelected(event.target.checked ? [...new Set([...selected, ...pageItems.map((item) => item.id)])] : selected.filter((id) => !pageItems.some((item) => item.id === id)))} /></th>}{fields.slice(0, 5).map((field) => <th key={field.key}><button className="sort-button" onClick={() => { setSortAsc(sortKey === field.key ? !sortAsc : true); setSortKey(field.key) }}>{field.label}{sortKey === field.key && <span>{sortAsc ? '↑' : '↓'}</span>}</button></th>)}<th>Status</th><th className="actions-heading">ACTIONS</th></tr></thead><tbody>
-          {loading ? <tr><td colSpan={fields.length + 3} className="table-message"><div className="loading-spinner" /> Loading records…</td></tr> : pageItems.map((record) => <tr key={record.id}>{selectable && <td><input type="checkbox" aria-label={`Select ${String(record[fields[0]?.key] ?? 'record')}`} checked={selected.includes(record.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, record.id] : selected.filter((id) => id !== record.id))} /></td>}{fields.slice(0, 5).map((field, index) => <td key={field.key}>{index === 0 ? <button className="table-primary-cell" onClick={() => openForm('view', record)}>{String(record[field.key] ?? '—')}</button> : <span className={field.type === 'number' ? 'tabular' : ''}>{field.key === 'amount' || field.key === 'price' || field.key === 'monthlyFee' || field.key === 'salary' ? currency(Number(record[field.key] ?? 0)) : String(record[field.key] ?? '—')}</span>}</td>)}<td><StatusBadge status={String(record.status ?? 'Recorded')} /></td><td><div className="row-actions"><button aria-label={`View ${module.singular}`} onClick={() => openForm('view', record)}><FileText size={15} /></button>{canEdit && (account.role === 'admin' || record.ownerEmail === account.email) && <button aria-label={`Edit ${module.singular}`} onClick={() => openForm('edit', record)}><SlidersHorizontal size={14} /></button>}{canDelete && (account.role === 'admin' || record.ownerEmail === account.email) && <button className="row-delete" aria-label={`Delete ${module.singular}`} onClick={() => void removeRecord(record)}><X size={15} /></button>}</div></td></tr>)}
+          {loading ? <tr><td colSpan={fields.length + 3} className="table-message"><div className="loading-spinner" /> Loading records…</td></tr> : pageItems.map((record) => <tr key={record.id}>{selectable && <td><input type="checkbox" aria-label={`Select ${String(record[fields[0]?.key] ?? 'record')}`} checked={selected.includes(record.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, record.id] : selected.filter((id) => id !== record.id))} /></td>}{fields.slice(0, 5).map((field, index) => <td key={field.key}>{index === 0 ? <button className="table-primary-cell" onClick={() => openForm('view', record)}>{String(record[field.key] ?? '—')}</button> : <span className={field.type === 'number' ? 'tabular' : ''}>{field.key === 'amount' || field.key === 'price' || field.key === 'monthlyFee' || field.key === 'salary' ? currency(Number(record[field.key] ?? 0)) : String(record[field.key] ?? '—')}</span>}</td>)}<td><StatusBadge status={String(record.status ?? 'Recorded')} /></td><td><div className="row-actions"><button aria-label={`View ${module.singular}`} onClick={() => openForm('view', record)}><FileText size={15} /></button>{canEdit && (account.role === 'admin' || account.role === 'receptionist' || account.role === 'housekeeping' || record.ownerEmail === account.email) && <button aria-label={`Edit ${module.singular}`} onClick={() => openForm('edit', record)}><SlidersHorizontal size={14} /></button>}{canDelete && (account.role === 'admin' || record.ownerEmail === account.email) && <button className="row-delete" aria-label={`Delete ${module.singular}`} onClick={() => void removeRecord(record)}><X size={15} /></button>}</div></td></tr>)}
           {!loading && pageItems.length === 0 && <tr><td colSpan={fields.length + 3}><EmptyState title={query || statusFilter !== 'All status' ? 'No matching records' : `No ${module.label.toLowerCase()} yet`} description={query || statusFilter !== 'All status' ? 'Try another search or clear the status filter.' : `Add a ${module.singular} to get started.`} action={canAdd && !query ? <button className="button button-secondary" onClick={() => openForm('create')}><Plus size={15} /> Add {module.singular}</button> : undefined} /></td></tr>}
         </tbody></table></div>
         <div className="table-pagination"><span>Showing <strong>{visibleItems.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, visibleItems.length)}</strong> of <strong>{visibleItems.length}</strong> records</span><div className="pagination-controls"><span>Rows per page</span><select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1) }} aria-label="Rows per page"><option value={8}>8</option><option value={15}>15</option><option value={30}>30</option></select><button aria-label="Previous page" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft size={15} /></button><span className="page-count">{page} / {totalPages}</span><button aria-label="Next page" disabled={page >= totalPages} onClick={() => setPage(page + 1)}><ChevronRight size={15} /></button></div></div>
@@ -658,7 +686,7 @@ function RoomFloorPlan({ rooms, buildingFilter, setBuildingFilter, onSelect }: {
 
 function StatusBadge({ status }: { status: string }) {
   const normalized = status.toLowerCase()
-  const tone = normalized.includes('pending') || normalized.includes('maintenance') || normalized.includes('late') || normalized.includes('high')
+  const tone = normalized.includes('pending') || normalized.includes('maintenance') || normalized.includes('late') || normalized.includes('high') || normalized.includes('needs cleaning') || normalized.includes('cleaning')
     ? 'warning'
     : normalized.includes('resolved') || normalized.includes('active') || normalized.includes('paid') || normalized.includes('present') || normalized.includes('available') || normalized.includes('confirmed') || normalized.includes('published')
       ? 'success'

@@ -16,11 +16,14 @@ Create a production build with `npm run build`.
 | Account | Email | Password |
 |---|---|---|
 | Admin | `admin@hosteldemo.com` | `Admin@123` |
+| Reception | `reception@hosteldemo.com` | `Reception@123` |
+| Housekeeping | `housekeeping@hosteldemo.com` | `Cleaning@123` |
 | Student | `student@hosteldemo.com` | `Student@123` |
 | Domestic guest | `guest@hosteldemo.com` | `Guest@123` |
 | International guest | `foreign@hosteldemo.com` | `Guest@123` |
 
 New resident accounts created by the admin receive the demo password `Welcome@123`.
+Admins can create reception and housekeeping logins from **Staff → Add employee** by selecting a portal access role. Staff accounts receive the demo password `Welcome@123`. Reception can manage guest stays, attendance, visitors, and bookings. Guest check-out creates a room-cleaning task; housekeeping marks it in progress and then completed to return the room to **Available**.
 
 ## Local data and security
 

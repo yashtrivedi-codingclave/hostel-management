@@ -1,6 +1,6 @@
 import Dexie, { type Table } from 'dexie'
 
-export type Role = 'admin' | 'student' | 'domestic_guest' | 'foreign_guest'
+export type Role = 'admin' | 'student' | 'domestic_guest' | 'foreign_guest' | 'receptionist' | 'housekeeping'
 export type ModuleKey =
   | 'students'
   | 'guests'
@@ -85,9 +85,43 @@ const makeRecord = (
   updatedAt: now.toISOString(),
 })
 
+async function ensureDemoStaffAccounts() {
+  const demoStaff = [
+    { id: 'staff-demo-reception', email: 'reception@hosteldemo.com', name: 'Asha Reception', role: 'Reception', accessRole: 'receptionist' as const, password: 'Reception@123' },
+    { id: 'staff-demo-housekeeping', email: 'housekeeping@hosteldemo.com', name: 'Ravi Housekeeping', role: 'Housekeeping', accessRole: 'housekeeping' as const, password: 'Cleaning@123' },
+  ]
+  for (const staff of demoStaff) {
+    if (!await db.records.get(staff.id)) {
+      await db.records.add(makeRecord('staff', staff.id, {
+        employeeId: staff.id === 'staff-demo-reception' ? 'EMP-RECEPTION' : 'EMP-CLEAN',
+        fullName: staff.name,
+        role: staff.role,
+        accessRole: staff.accessRole,
+        email: staff.email,
+        status: 'Active',
+      }))
+    }
+    if (!await db.accounts.where('email').equals(staff.email).first()) {
+      const accountId = staff.accessRole === 'receptionist' ? 'account-demo-reception' : 'account-demo-housekeeping'
+      await db.accounts.add({
+        id: await db.accounts.get(accountId) ? crypto.randomUUID() : accountId,
+        email: staff.email,
+        password: staff.password,
+        name: staff.name,
+        role: staff.accessRole,
+        active: true,
+        recordId: staff.id,
+      })
+    }
+  }
+}
+
 export async function seedDemoData(force = false) {
   const count = await db.records.count()
-  if (count && !force) return
+  if (count && !force) {
+    await ensureDemoStaffAccounts()
+    return
+  }
 
   await db.transaction('rw', db.records, db.accounts, db.settings, async () => {
     await Promise.all([db.records.clear(), db.accounts.clear(), db.settings.clear()])
@@ -163,7 +197,7 @@ export async function seedDemoData(force = false) {
         passport: isForeign ? `P${String(51000000 + index)}` : '—',
         arrival: pastDate(index),
         departure: futureDate(index + 3),
-        room: String(201 + (index % 10)),
+        room: String(101 + index),
         bookingReference: `BK-26-${String(1000 + index)}`,
         formCStatus: isForeign ? (index % 2 ? 'Submitted' : 'Pending') : 'Not required',
         paymentStatus: index % 4 === 0 ? 'Pending' : 'Paid',
@@ -360,6 +394,29 @@ export async function seedDemoData(force = false) {
       }),
     )
 
+    records.push(
+      makeRecord('staff', 'staff-demo-reception', {
+        employeeId: 'EMP-RECEPTION',
+        fullName: 'Asha Reception',
+        role: 'Reception',
+        accessRole: 'receptionist',
+        email: 'reception@hosteldemo.com',
+        phone: '+91 9890011001',
+        joiningDate: iso(now),
+        status: 'Active',
+      }),
+      makeRecord('staff', 'staff-demo-housekeeping', {
+        employeeId: 'EMP-CLEAN',
+        fullName: 'Ravi Housekeeping',
+        role: 'Housekeeping',
+        accessRole: 'housekeeping',
+        email: 'housekeeping@hosteldemo.com',
+        phone: '+91 9890011002',
+        joiningDate: iso(now),
+        status: 'Active',
+      }),
+    )
+
     await db.records.bulkAdd(records)
     await db.accounts.add({
       id: 'account-admin',
@@ -369,6 +426,26 @@ export async function seedDemoData(force = false) {
       role: 'admin',
       active: true,
     })
+    await db.accounts.bulkAdd([
+      {
+        id: 'account-demo-reception',
+        email: 'reception@hosteldemo.com',
+        password: 'Reception@123',
+        name: 'Asha Reception',
+        role: 'receptionist',
+        active: true,
+        recordId: 'staff-demo-reception',
+      },
+      {
+        id: 'account-demo-housekeeping',
+        email: 'housekeeping@hosteldemo.com',
+        password: 'Cleaning@123',
+        name: 'Ravi Housekeeping',
+        role: 'housekeeping',
+        active: true,
+        recordId: 'staff-demo-housekeeping',
+      },
+    ])
     await db.settings.bulkAdd([
       { key: 'hostelName', value: 'Haven House' },
       { key: 'currency', value: 'INR' },

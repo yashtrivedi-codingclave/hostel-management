@@ -55,7 +55,12 @@ async function validateBooking(values: Record<string, RecordValue>, exceptId?: s
   if (!room || !bed || !checkIn || !checkOut || ['Cancelled', 'Completed'].includes(String(values.status))) return
   const roomRecord = await db.records.where('type').equals('rooms').filter((item) => String(item.roomNumber) === room).first()
   if (!roomRecord) throw new Error('Choose a room that exists in the room register.')
-  if (['Maintenance', 'Blocked'].includes(String(roomRecord.status))) throw new Error('This room is not available for bookings.')
+  if (['Maintenance', 'Blocked', 'Needs cleaning', 'Cleaning'].includes(String(roomRecord.status))) {
+    throw new Error('This room is not available for bookings until it is clean and ready.')
+  }
+  const pendingCleaning = await db.records.where('type').equals('housekeeping')
+    .filter((task) => String(task.room) === room && ['Needs cleaning', 'In progress'].includes(String(task.status))).first()
+  if (pendingCleaning) throw new Error('This room is not available until housekeeping completes its cleaning task.')
   const bedNumber = Number(bed.replace(/^B/i, ''))
   if (!Number.isInteger(bedNumber) || bedNumber < 1 || bedNumber > Number(roomRecord.capacity ?? 0)) {
     throw new Error('Choose a bed within this room’s capacity, for example B1.')
@@ -122,6 +127,20 @@ export async function createRecord(
         recordId: item.id,
       })
     }
+    if (module.key === 'staff' && ['receptionist', 'housekeeping'].includes(String(normalized.accessRole))) {
+      const email = String(normalized.email ?? '').trim().toLowerCase()
+      if (!email) throw new Error('A login email is required when portal access is enabled.')
+      if (await db.accounts.where('email').equals(email).first()) throw new Error('An account already exists for that email.')
+      await db.accounts.add({
+        id: crypto.randomUUID(),
+        email,
+        password: 'Welcome@123',
+        name: String(normalized.fullName ?? 'Staff member'),
+        role: normalized.accessRole as Account['role'],
+        active: normalized.status !== 'Inactive',
+        recordId: item.id,
+      })
+    }
     await db.records.add(item)
     if (module.key === 'payments') {
       await db.records.add({
@@ -142,6 +161,9 @@ export async function createRecord(
     if (module.key === 'bookings' && normalized.status === 'Checked in') {
       await adjustRoomOccupancy(String(normalized.room), 1)
     }
+    if (module.key === 'guests' && normalized.status === 'Checked in') {
+      await adjustRoomOccupancy(String(normalized.room), 1)
+    }
   })
   return item
 }
@@ -153,6 +175,29 @@ async function adjustRoomOccupancy(roomNumber: string, delta: number) {
   const occupied = Math.min(capacity, Math.max(0, Number(room.occupied ?? 0) + delta))
   const status = occupied > 0 ? 'Occupied' : room.status === 'Maintenance' || room.status === 'Blocked' ? room.status : 'Available'
   await db.records.put({ ...room, occupied, status, updatedAt: new Date().toISOString() })
+}
+
+async function scheduleRoomCleaning(roomNumber: string, task: string) {
+  const room = await db.records.where('type').equals('rooms')
+    .filter((record) => String(record.roomNumber) === roomNumber).first()
+  const openTask = await db.records.where('type').equals('housekeeping')
+    .filter((record) => String(record.room) === roomNumber && ['Needs cleaning', 'In progress'].includes(String(record.status))).first()
+  const now = new Date().toISOString()
+  if (!openTask) {
+    await db.records.add({
+      id: crypto.randomUUID(),
+      type: 'housekeeping',
+      task,
+      room: roomNumber,
+      dueDate: now.slice(0, 10),
+      status: 'Needs cleaning',
+      createdAt: now,
+      updatedAt: now,
+    })
+  }
+  if (room && !['Maintenance', 'Blocked'].includes(String(room.status))) {
+    await db.records.put({ ...room, status: 'Needs cleaning', updatedAt: now })
+  }
 }
 
 export async function updateRecord(
@@ -189,12 +234,68 @@ export async function updateRecord(
       if (existingAccount && existingAccount.id !== account?.id) throw new Error('An account already exists for that email.')
       if (account) await db.accounts.put({ ...account, email, name: String(normalized.fullName ?? account.name) })
     }
+    if (module.key === 'staff') {
+      const account = await db.accounts.where('recordId').equals(id).first()
+      if (['receptionist', 'housekeeping'].includes(String(normalized.accessRole))) {
+        const email = String(normalized.email ?? '').trim().toLowerCase()
+        if (!email) throw new Error('A login email is required when portal access is enabled.')
+        const existingAccount = await db.accounts.where('email').equals(email).first()
+        if (existingAccount && existingAccount.id !== account?.id) throw new Error('An account already exists for that email.')
+        await db.accounts.put({
+          id: account?.id ?? crypto.randomUUID(),
+          email,
+          password: account?.password ?? 'Welcome@123',
+          name: String(normalized.fullName ?? 'Staff member'),
+          role: normalized.accessRole as Account['role'],
+          active: normalized.status !== 'Inactive',
+          recordId: id,
+        })
+      } else if (account) {
+        await db.accounts.delete(account.id)
+      }
+    }
     if (module.key === 'bookings') {
       const wasCheckedIn = existing.status === 'Checked in'
       const willBeCheckedIn = normalized.status === 'Checked in'
       const roomChanged = String(existing.room) !== String(normalized.room)
       if (wasCheckedIn && (!willBeCheckedIn || roomChanged)) await adjustRoomOccupancy(String(existing.room), -1)
       if (willBeCheckedIn && (!wasCheckedIn || roomChanged)) await adjustRoomOccupancy(String(normalized.room), 1)
+      if (wasCheckedIn && (!willBeCheckedIn || roomChanged)) {
+        const roomNumber = String(existing.room)
+        await scheduleRoomCleaning(roomNumber, `Room ${roomNumber} cleaning after checkout`)
+      }
+    }
+    if (module.key === 'guests') {
+      const wasCheckedIn = existing.status === 'Checked in'
+      const willBeCheckedIn = normalized.status === 'Checked in'
+      const oldRoom = String(existing.room ?? '')
+      const newRoom = String(normalized.room ?? '')
+      if (wasCheckedIn && (!willBeCheckedIn || oldRoom !== newRoom)) {
+        await adjustRoomOccupancy(oldRoom, -1)
+        await scheduleRoomCleaning(oldRoom, `Room ${oldRoom} cleaning after guest checkout`)
+      }
+      if (willBeCheckedIn && (!wasCheckedIn || oldRoom !== newRoom)) {
+        await adjustRoomOccupancy(newRoom, 1)
+      }
+    }
+    if (module.key === 'housekeeping' && existing.status !== normalized.status && normalized.status === 'Completed') {
+      const roomNumber = String(existing.room ?? '')
+      const room = await db.records.where('type').equals('rooms')
+        .filter((record) => String(record.roomNumber) === roomNumber).first()
+      if (room && !['Maintenance', 'Blocked'].includes(String(room.status))) {
+        await db.records.put({
+          ...room,
+          status: Number(room.occupied ?? 0) > 0 ? 'Occupied' : 'Available',
+          updatedAt: new Date().toISOString(),
+        })
+      }
+    } else if (module.key === 'housekeeping' && existing.status !== normalized.status && normalized.status === 'In progress') {
+      const roomNumber = String(existing.room ?? '')
+      const room = await db.records.where('type').equals('rooms')
+        .filter((record) => String(record.roomNumber) === roomNumber).first()
+      if (room && !['Maintenance', 'Blocked'].includes(String(room.status))) {
+        await db.records.put({ ...room, status: 'Cleaning', updatedAt: new Date().toISOString() })
+      }
     }
     const updated = { ...existing, ...normalized, updatedAt: new Date().toISOString() }
     await db.records.put(updated)
@@ -241,6 +342,12 @@ export async function deleteRecord(module: ModuleConfig, id: string) {
         String(booking.room) === String(record.roomNumber) && isActiveBooking(booking),
       ).first()
       if (occupied || activeBooking) throw new Error('This room cannot be deleted while it has occupants or active bookings.')
+      const activeCleaning = await db.records.where('type').equals('housekeeping').filter((task) =>
+        String(task.room) === String(record.roomNumber) && ['Needs cleaning', 'In progress'].includes(String(task.status)),
+      ).first()
+      if (activeCleaning || ['Needs cleaning', 'Cleaning'].includes(String(record.status))) {
+        throw new Error('Complete the room cleaning task before deleting this room.')
+      }
     }
     if (module.key === 'bookings' && isActiveBooking(record)) {
       throw new Error('Cancel this booking before deleting it.')
@@ -249,7 +356,7 @@ export async function deleteRecord(module: ModuleConfig, id: string) {
       const invoice = await db.records.where('type').equals('invoices').filter((item) => item.reference === record.reference).first()
       if (invoice) await db.records.delete(invoice.id)
     }
-    if (module.key === 'students' || module.key === 'guests') {
+    if (module.key === 'students' || module.key === 'guests' || module.key === 'staff') {
       await db.accounts.where('recordId').equals(id).delete()
     }
     await db.records.delete(id)
