@@ -27,6 +27,8 @@ Admins can create reception and housekeeping logins from **Staff → Add employe
 
 Reception can punch residents in and out from **Attendance**; the live register is reflected on staff/admin dashboards and each resident's attendance view. Student and guest IDs are generated on creation. Guest registration displays meal preferences and tea/coffee service times for Premium, Deluxe, or Luxury rooms. The room map distinguishes occupied, booked, reserved, cleaning, and maintenance states.
 
+Student and guest room forms show rooms and beds available for the selected stay dates. Students can reserve a bed or check in, and guest registrations create dated bookings for reserved or checked-in stays. The **Rooms & beds** list and floor plan show each room's free-bed count alongside its total capacity.
+
 ## Local data and security
 
 IndexedDB stores demo records, accounts, and hostel settings. LocalStorage keeps the current demo session and resident-portal permission preferences. Use **Settings → Demo data** to export or restore a JSON backup, or reset the workspace to its original sample data.

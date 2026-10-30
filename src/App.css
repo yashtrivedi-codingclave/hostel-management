@@ -249,6 +249,7 @@
 .data-table { width: 100%; border-collapse: collapse; text-align: left; white-space: nowrap; }
 .data-table th { height: 36px; padding: 0 11px; border-bottom: 1px solid #eef0ed; background: #fbfcfb; color: #98a099; font-size: 8px; font-weight: 650; letter-spacing: .4px; }
 .data-table td { height: 47px; padding: 0 11px; border-bottom: 1px solid #f0f2ef; color: #78827a; font-size: 10px; }
+.room-free-count { color: #4b8c5c; font-variant-numeric: tabular-nums; }
 .data-table tr:last-child td { border-bottom: 0; }
 .data-table tbody tr:hover { background: #fcfdfb; }
 .data-table input[type="checkbox"] { width: 13px; height: 13px; accent-color: #5c7d62; }
@@ -934,6 +935,7 @@ body, #root { font-size: 15px; }
 .table-search input { background: transparent; color: #dce5ec; }
 .data-table th { background: #1c2731; color: #91a0ad; }
 .data-table td { color: #b0bdc7; }
+.room-free-count { color: #9bd3a9; }
 .data-table tbody tr:hover { background: #202c36; }
 .table-primary-cell { color: #b4d7f0; }
 .table-primary-cell:hover, .sort-button:hover { color: #8bc5e8; }

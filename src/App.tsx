@@ -15,7 +15,7 @@ import { db, type Account, type ModuleKey, type RecordItem, type Role } from './
 import { getModule, modules, roleLabel, type FieldConfig, type ModuleConfig } from './lib/modules'
 import {
   createRecord, deleteRecord, exportBackup, getSettings, importBackup, initializeData,
-  listRecords, punchAttendance, resetDemoData, updateRecord, updateSetting,
+  getRoomBedAvailability, listRecords, punchAttendance, resetDemoData, updateRecord, updateSetting,
 } from './lib/service'
 import { useAuth } from './lib/store'
 import './App.css'
@@ -334,6 +334,11 @@ function useDashboardData() {
 const pieColors = ['#287345', '#cf8a2e', '#397cb6']
 const currency = (amount: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(amount)
 const localDateKey = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+const localDateOffset = (days: number) => {
+  const date = new Date()
+  date.setDate(date.getDate() + days)
+  return localDateKey(date)
+}
 
 function Dashboard({ account }: { account: Account }) {
   const { data } = useDashboardData()
@@ -543,6 +548,7 @@ function ModulePage({ account }: { account: Account }) {
   const [settings, setSettings] = useState<{ key: string; value: string }[]>([])
   const [savingSettings, setSavingSettings] = useState(false)
   const [buildingFilter, setBuildingFilter] = useState('All buildings')
+  const [roomBeds, setRoomBeds] = useState<Record<string, string[]>>({})
 
   useEffect(() => {
     const search = (location.state as { search?: string } | null)?.search
@@ -578,6 +584,17 @@ function ModulePage({ account }: { account: Account }) {
     window.addEventListener('haven-data-changed', refresh)
     return () => window.removeEventListener('haven-data-changed', refresh)
   }, [refresh])
+  useEffect(() => {
+    if (module?.key !== 'rooms') {
+      setRoomBeds({})
+      return
+    }
+    let active = true
+    void getRoomBedAvailability().then((availability) => {
+      if (active) setRoomBeds(Object.fromEntries(availability.map(({ room, beds }) => [String(room.roomNumber), beds])))
+    }).catch((error: unknown) => toast.error(error instanceof Error ? error.message : 'Room availability could not be loaded.'))
+    return () => { active = false }
+  }, [items, module?.key])
 
   const visibleItems = useMemo(() => {
     let result = items.filter((item) => {
@@ -690,21 +707,23 @@ function ModulePage({ account }: { account: Account }) {
   const canEdit = hasPermission(account.role, module, 'edit')
   const canDelete = hasPermission(account.role, module, 'delete')
   const selectable = account.role === 'admin' && canDelete
+  const roomColumns = module.key === 'rooms' ? 2 : 0
+  const tableColumnCount = Math.min(fields.length, 5) + roomColumns + 2 + (selectable ? 1 : 0)
 
   return (
     <section className="module-page">
       <div className="page-heading module-heading"><div><div className="eyebrow muted">PROPERTY MANAGEMENT</div><h1>{module.label}</h1><p>{module.description}</p></div>{canAdd && <button className="button button-primary" onClick={() => openForm('create')}><Plus size={16} /> Add {module.singular}</button>}</div>
-      {module.key === 'rooms' && <RoomFloorPlan rooms={items} buildingFilter={buildingFilter} setBuildingFilter={setBuildingFilter} onSelect={(room) => openForm('view', room)} />}
+      {module.key === 'rooms' && <RoomFloorPlan rooms={items} availableBeds={roomBeds} buildingFilter={buildingFilter} setBuildingFilter={setBuildingFilter} onSelect={(room) => openForm('view', room)} />}
       {module.key === 'attendance' && <AttendanceLive records={items.filter((record) => record.date === localDateKey(new Date()))} />}
       <div className="panel table-panel">
         <div className="table-toolbar"><div className="table-toolbar-left"><label className="table-search"><Search size={16} /><input aria-label={`Search ${module.label}`} placeholder={`Search ${module.label.toLowerCase()}...`} value={query} onChange={(event) => { setQuery(event.target.value); setPage(1) }} /></label><select aria-label="Filter by status" className="filter-select" value={statusFilter} onChange={(event) => { setStatusFilter(event.target.value); setPage(1) }}><option>All status</option>{statusOptions.map((status) => <option key={status}>{status}</option>)}</select></div><div className="table-toolbar-right">{selected.length > 0 && <button className="button button-danger subtle-button" onClick={() => void bulkDelete()}><X size={14} /> Delete {selected.length}</button>}<button className="button button-secondary" onClick={exportCsv}><Download size={15} /> Export CSV</button><button className="icon-button filter-button" aria-label="Filter options" onClick={() => toast.info('Use the search and status filters to narrow this list.')}><SlidersHorizontal size={16} /></button></div></div>
-        <div className="table-scroll"><table className="data-table"><thead><tr>{selectable && <th className="check-col"><input type="checkbox" aria-label="Select all rows" checked={pageItems.length > 0 && pageItems.every((item) => selected.includes(item.id))} onChange={(event) => setSelected(event.target.checked ? [...new Set([...selected, ...pageItems.map((item) => item.id)])] : selected.filter((id) => !pageItems.some((item) => item.id === id)))} /></th>}{fields.slice(0, 5).map((field) => <th key={field.key}><button className="sort-button" onClick={() => { setSortAsc(sortKey === field.key ? !sortAsc : true); setSortKey(field.key) }}>{field.label}{sortKey === field.key && <span>{sortAsc ? '↑' : '↓'}</span>}</button></th>)}<th>Status</th><th className="actions-heading">ACTIONS</th></tr></thead><tbody>
-          {loading ? <tr><td colSpan={fields.length + 3} className="table-message"><div className="loading-spinner" /> Loading records…</td></tr> : pageItems.map((record) => {
+        <div className="table-scroll"><table className="data-table"><thead><tr>{selectable && <th className="check-col"><input type="checkbox" aria-label="Select all rows" checked={pageItems.length > 0 && pageItems.every((item) => selected.includes(item.id))} onChange={(event) => setSelected(event.target.checked ? [...new Set([...selected, ...pageItems.map((item) => item.id)])] : selected.filter((id) => !pageItems.some((item) => item.id === id)))} /></th>}{fields.slice(0, 5).map((field) => <th key={field.key}><button className="sort-button" onClick={() => { setSortAsc(sortKey === field.key ? !sortAsc : true); setSortKey(field.key) }}>{field.label}{sortKey === field.key && <span>{sortAsc ? '↑' : '↓'}</span>}</button></th>)}{module.key === 'rooms' && <><th>Unavailable / Total</th><th>Available beds</th></>}<th>Status</th><th className="actions-heading">ACTIONS</th></tr></thead><tbody>
+          {loading ? <tr><td colSpan={tableColumnCount} className="table-message"><div className="loading-spinner" /> Loading records…</td></tr> : pageItems.map((record) => {
             const todayPunch = items.find((item) => item.type === 'attendance' && item.resident === record.resident && item.date === localDateKey(new Date()))
             const punchDirection = todayPunch?.checkIn ? todayPunch.checkOut ? null : 'out' : 'in'
-            return <tr key={record.id}>{selectable && <td><input type="checkbox" aria-label={`Select ${String(record[fields[0]?.key] ?? 'record')}`} checked={selected.includes(record.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, record.id] : selected.filter((id) => id !== record.id))} /></td>}{fields.slice(0, 5).map((field, index) => <td key={field.key}>{index === 0 ? <button className="table-primary-cell" onClick={() => openForm('view', record)}>{String(record[field.key] ?? '—')}</button> : <span className={field.type === 'number' ? 'tabular' : ''}>{field.key === 'amount' || field.key === 'price' || field.key === 'monthlyFee' || field.key === 'salary' ? currency(Number(record[field.key] ?? 0)) : String(record[field.key] ?? '—')}</span>}</td>)}<td><StatusBadge status={String(record.status ?? 'Recorded')} /></td><td><div className="row-actions"><button aria-label={`View ${module.singular}`} title="View details" onClick={() => openForm('view', record)}><Eye size={15} /></button>{canEdit && (account.role === 'admin' || account.role === 'receptionist' || account.role === 'housekeeping' || record.ownerEmail === account.email) && <button aria-label={`Edit ${module.singular}`} title="Edit record" onClick={() => openForm('edit', record)}><Pencil size={15} /></button>}{module.key === 'attendance' && canEdit && punchDirection && <button className="punch-action" aria-label={`${punchDirection === 'in' ? 'Punch in' : 'Punch out'} ${String(record.resident)}`} title={punchDirection === 'in' ? 'Punch in now' : 'Punch out now'} onClick={() => void handlePunch(String(record.resident), punchDirection)}>{punchDirection === 'in' ? <LogIn size={15} /> : <LogOut size={15} />}</button>}{module.key === 'attendance' && todayPunch?.checkOut && <span className="punch-complete" title="Attendance completed today"><Check size={14} /></span>}{canDelete && (account.role === 'admin' || record.ownerEmail === account.email) && <button className="row-delete" aria-label={`Delete ${module.singular}`} title="Delete record" onClick={() => void removeRecord(record)}><Trash2 size={15} /></button>}</div></td></tr>
+            return <tr key={record.id}>{selectable && <td><input type="checkbox" aria-label={`Select ${String(record[fields[0]?.key] ?? 'record')}`} checked={selected.includes(record.id)} onChange={(event) => setSelected(event.target.checked ? [...selected, record.id] : selected.filter((id) => id !== record.id))} /></td>}{fields.slice(0, 5).map((field, index) => <td key={field.key}>{index === 0 ? <button className="table-primary-cell" onClick={() => openForm('view', record)}>{String(record[field.key] ?? '—')}</button> : <span className={field.type === 'number' ? 'tabular' : ''}>{field.key === 'amount' || field.key === 'price' || field.key === 'monthlyFee' || field.key === 'salary' ? currency(Number(record[field.key] ?? 0)) : String(record[field.key] ?? '—')}</span>}</td>)}{module.key === 'rooms' && <><td className="tabular">{Number(record.capacity ?? 0) - (roomBeds[String(record.roomNumber)] ?? []).length} / {String(record.capacity ?? 0)}</td><td><strong className="room-free-count">{(roomBeds[String(record.roomNumber)] ?? []).length}</strong> free</td></>}<td><StatusBadge status={String(record.status ?? 'Recorded')} /></td><td><div className="row-actions"><button aria-label={`View ${module.singular}`} title="View details" onClick={() => openForm('view', record)}><Eye size={15} /></button>{canEdit && (account.role === 'admin' || account.role === 'receptionist' || account.role === 'housekeeping' || record.ownerEmail === account.email) && <button aria-label={`Edit ${module.singular}`} title="Edit record" onClick={() => openForm('edit', record)}><Pencil size={15} /></button>}{module.key === 'attendance' && canEdit && punchDirection && <button className="punch-action" aria-label={`${punchDirection === 'in' ? 'Punch in' : 'Punch out'} ${String(record.resident)}`} title={punchDirection === 'in' ? 'Punch in now' : 'Punch out now'} onClick={() => void handlePunch(String(record.resident), punchDirection)}>{punchDirection === 'in' ? <LogIn size={15} /> : <LogOut size={15} />}</button>}{module.key === 'attendance' && todayPunch?.checkOut && <span className="punch-complete" title="Attendance completed today"><Check size={14} /></span>}{canDelete && (account.role === 'admin' || record.ownerEmail === account.email) && <button className="row-delete" aria-label={`Delete ${module.singular}`} title="Delete record" onClick={() => void removeRecord(record)}><Trash2 size={15} /></button>}</div></td></tr>
           })}
-          {!loading && pageItems.length === 0 && <tr><td colSpan={fields.length + 3}><EmptyState title={query || statusFilter !== 'All status' ? 'No matching records' : `No ${module.label.toLowerCase()} yet`} description={query || statusFilter !== 'All status' ? 'Try another search or clear the status filter.' : `Add a ${module.singular} to get started.`} action={canAdd && !query ? <button className="button button-secondary" onClick={() => openForm('create')}><Plus size={15} /> Add {module.singular}</button> : undefined} /></td></tr>}
+          {!loading && pageItems.length === 0 && <tr><td colSpan={tableColumnCount}><EmptyState title={query || statusFilter !== 'All status' ? 'No matching records' : `No ${module.label.toLowerCase()} yet`} description={query || statusFilter !== 'All status' ? 'Try another search or clear the status filter.' : `Add a ${module.singular} to get started.`} action={canAdd && !query ? <button className="button button-secondary" onClick={() => openForm('create')}><Plus size={15} /> Add {module.singular}</button> : undefined} /></td></tr>}
         </tbody></table></div>
         <div className="table-pagination"><span>Showing <strong>{visibleItems.length ? (page - 1) * pageSize + 1 : 0}–{Math.min(page * pageSize, visibleItems.length)}</strong> of <strong>{visibleItems.length}</strong> records</span><div className="pagination-controls"><span>Rows per page</span><select value={pageSize} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1) }} aria-label="Rows per page"><option value={8}>8</option><option value={15}>15</option><option value={30}>30</option></select><button aria-label="Previous page" disabled={page <= 1} onClick={() => setPage(page - 1)}><ChevronLeft size={15} /></button><span className="page-count">{page} / {totalPages}</span><button aria-label="Next page" disabled={page >= totalPages} onClick={() => setPage(page + 1)}><ChevronRight size={15} /></button></div></div>
       </div>
@@ -714,7 +733,7 @@ function ModulePage({ account }: { account: Account }) {
   )
 }
 
-function RoomFloorPlan({ rooms, buildingFilter, setBuildingFilter, onSelect }: { rooms: RecordItem[]; buildingFilter: string; setBuildingFilter: (building: string) => void; onSelect: (room: RecordItem) => void }) {
+function RoomFloorPlan({ rooms, availableBeds, buildingFilter, setBuildingFilter, onSelect }: { rooms: RecordItem[]; availableBeds: Record<string, string[]>; buildingFilter: string; setBuildingFilter: (building: string) => void; onSelect: (room: RecordItem) => void }) {
   const [bookings, setBookings] = useState<RecordItem[]>([])
   const refreshBookings = useCallback(async () => setBookings(await listRecords('bookings')), [])
   useEffect(() => {
@@ -744,7 +763,10 @@ function RoomFloorPlan({ rooms, buildingFilter, setBuildingFilter, onSelect }: {
   return <section className="panel floor-plan">
     <div className="floor-plan-heading"><div><span className="eyebrow muted">AT A GLANCE</span><h2>Room floor plan</h2><p>Select a room to view its occupancy and facilities.</p></div><label className="floor-building"><Building2 size={14} /><select aria-label="Filter floor plan by building" value={buildingFilter} onChange={(event) => setBuildingFilter(event.target.value)}><option>All buildings</option>{buildings.map((building) => <option key={building}>{building}</option>)}</select><ChevronDown size={13} /></label></div>
     <div className="floor-plan-summary"><span><i className="room-key available-key" />{available} available</span><span><i className="room-key occupied-key" />{occupied} occupied</span><span><i className="room-key booked-key" />{booked} booked</span><span><i className="room-key reserved-key" />{reserved} reserved</span><span><i className="room-key cleaning-key" />{cleaning} cleaning</span><span><i className="room-key maintenance-key" />{maintenance} maintenance / blocked</span></div>
-    <div className="room-grid">{classifiedRooms.map(({ room, state }) => <button key={room.id} className={`room-tile ${state.toLowerCase().replaceAll(' ', '-')}`} title={`${room.roomNumber} · ${state} · ${room.occupied}/${room.capacity} beds`} onClick={() => onSelect(room)}><strong>{room.roomNumber}</strong><span>{state} · {room.occupied}/{room.capacity}</span></button>)}</div>
+    <div className="room-grid">{classifiedRooms.map(({ room, state }) => {
+      const freeBeds = availableBeds[String(room.roomNumber)] ?? []
+      return <button key={room.id} className={`room-tile ${state.toLowerCase().replaceAll(' ', '-')}`} title={`${room.roomNumber} · ${state} · ${freeBeds.length} of ${room.capacity} beds free`} onClick={() => onSelect(room)}><strong>{room.roomNumber}</strong><span>{state} · {freeBeds.length}/{room.capacity} free</span></button>
+    })}</div>
   </section>
 }
 
@@ -765,25 +787,46 @@ function EmptyState({ title, description, action }: { title: string; description
 }
 
 function RecordDialog({ module, mode, record, onClose, onSave }: { module: ModuleConfig; mode: 'create' | 'edit' | 'view'; record?: RecordItem; onClose: () => void; onSave: (values: Record<string, string>) => Promise<void> }) {
-  const [values, setValues] = useState<Record<string, string>>(() => Object.fromEntries(module.fields.map((field) => [field.key, String(record?.[field.key] ?? (field.type === 'date' && mode === 'create' ? new Date().toISOString().slice(0, 10) : ''))])))
+  const [values, setValues] = useState<Record<string, string>>(() => {
+    const initial = Object.fromEntries(module.fields.map((field) => [
+      field.key,
+      String(record?.[field.key] ?? (field.type === 'date' && mode === 'create' ? localDateKey(new Date()) : '')),
+    ]))
+    if (mode === 'create' && module.key === 'students') {
+      initial.stayStart = localDateOffset(0)
+      initial.stayEnd = localDateOffset(365)
+      initial.bookingStatus = 'No booking'
+      initial.admissionDate = localDateOffset(0)
+    }
+    if (mode === 'create' && module.key === 'guests') {
+      initial.arrival = localDateOffset(0)
+      initial.departure = localDateOffset(1)
+    }
+    return initial
+  })
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(false)
-  const [rooms, setRooms] = useState<RecordItem[]>([])
+  const [roomAvailability, setRoomAvailability] = useState<{ room: RecordItem; beds: string[] }[]>([])
   const [residents, setResidents] = useState<RecordItem[]>([])
   const isView = mode === 'view'
 
   useEffect(() => {
-    if (module.key === 'guests') {
-      void listRecords('rooms').then(setRooms).catch((issue: unknown) => toast.error(issue instanceof Error ? issue.message : 'Rooms could not be loaded.'))
+    if (module.key === 'students' || module.key === 'guests') {
+      const start = values.stayStart || values.arrival || localDateOffset(0)
+      const end = values.stayEnd || values.departure || start
+      void getRoomBedAvailability(start, end, String(record?.bookingId ?? '') || undefined, record?.id)
+        .then(setRoomAvailability)
+        .catch((issue: unknown) => toast.error(issue instanceof Error ? issue.message : 'Room availability could not be loaded.'))
     }
     if (module.key === 'attendance') {
       void Promise.all([listRecords('students'), listRecords('guests')])
         .then(([students, guests]) => setResidents([...students, ...guests]))
         .catch((issue: unknown) => toast.error(issue instanceof Error ? issue.message : 'Residents could not be loaded.'))
     }
-  }, [module.key])
+  }, [module.key, values.stayStart, values.stayEnd, values.arrival, values.departure, record?.id, record?.bookingId])
 
-  const selectedRoom = rooms.find((room) => String(room.roomNumber) === values.room)
+  const selectedRoom = roomAvailability.find(({ room }) => String(room.roomNumber) === values.room)?.room
+  const selectedRoomBeds = roomAvailability.find(({ room }) => String(room.roomNumber) === values.room)?.beds ?? []
   const luxuryRoom = selectedRoom && ['premium', 'deluxe', 'luxury'].includes(String(selectedRoom.category).toLowerCase())
   const mealFields = new Set(['foodService', 'mealPreferences', 'mealTimes', 'teaCoffee', 'teaCoffeeTime'])
 
@@ -805,8 +848,9 @@ function RecordDialog({ module, mode, record, onClose, onSave }: { module: Modul
       const value = event.target.value
       setValues((current) => {
         const next = { ...current, [field.key]: value }
+        if (field.key === 'room' && value !== current.room) next.bed = ''
         if (module.key === 'guests' && field.key === 'room') {
-          const room = rooms.find((item) => String(item.roomNumber) === value)
+          const room = roomAvailability.find((item) => String(item.room.roomNumber) === value)?.room
           if (!['premium', 'deluxe', 'luxury'].includes(String(room?.category).toLowerCase())) {
             for (const key of mealFields) next[key] = ''
           }
@@ -814,8 +858,15 @@ function RecordDialog({ module, mode, record, onClose, onSave }: { module: Modul
         return next
       })
     } }
-    if (module.key === 'guests' && field.key === 'room') {
-      return <select {...common}><option value="">Select a room…</option>{rooms.map((room) => <option value={String(room.roomNumber)} key={room.id}>{String(room.roomNumber)} · {String(room.category)} · {String(room.status)}</option>)}</select>
+    if ((module.key === 'students' || module.key === 'guests') && field.key === 'room') {
+      const options = roomAvailability.filter(({ room, beds }) => beds.length > 0 || String(room.roomNumber) === values.room)
+      return <select {...common}><option value="">Select an available room…</option>{options.map(({ room, beds }) => <option value={String(room.roomNumber)} key={room.id}>{String(room.roomNumber)} · {String(room.category)} · {beds.length} bed{beds.length === 1 ? '' : 's'} free</option>)}</select>
+    }
+    if ((module.key === 'students' || module.key === 'guests') && field.key === 'bed') {
+      const options = selectedRoomBeds.includes(values.bed) || !values.bed || mode === 'create'
+        ? selectedRoomBeds
+        : [...selectedRoomBeds, values.bed]
+      return <select {...common} disabled={isView || !values.room}><option value="">Select an available bed…</option>{options.map((bed) => <option key={bed}>{bed}</option>)}</select>
     }
     if (module.key === 'attendance' && field.key === 'resident') {
       const names = [...new Set(residents.map((resident) => String(resident.fullName ?? '')).filter(Boolean))]

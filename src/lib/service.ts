@@ -42,6 +42,117 @@ function overlaps(startA: string, endA: string, startB: string, endB: string) {
   return startA <= endB && startB <= endA
 }
 
+function currentDateKey() {
+  const { date } = getLocalDateTime()
+  return date
+}
+
+function isRoomUnavailable(room: RecordItem) {
+  return ['Maintenance', 'Blocked', 'Needs cleaning', 'Cleaning'].includes(String(room.status))
+}
+
+function isInDateRange(start: string, end: string, requestedStart: string, requestedEnd: string) {
+  return (!start || !requestedEnd || start <= requestedEnd) && (!end || !requestedStart || requestedStart <= end)
+}
+
+export async function getRoomBedAvailability(
+  startDate = currentDateKey(),
+  endDate = startDate,
+  excludeBookingId?: string,
+  excludeResidentId?: string,
+): Promise<{ room: RecordItem; beds: string[] }[]> {
+  const [rooms, students, guests, bookings, housekeeping] = await Promise.all([
+    listRecords('rooms'),
+    listRecords('students'),
+    listRecords('guests'),
+    listRecords('bookings'),
+    listRecords('housekeeping'),
+  ])
+  const today = currentDateKey()
+  return rooms.map((room) => {
+    const roomNumber = String(room.roomNumber)
+    if (isRoomUnavailable(room)) return { room, beds: [] }
+    const capacity = Number(room.capacity ?? 0)
+    if (!Number.isInteger(capacity) || capacity < 1) return { room, beds: [] }
+    if (housekeeping.some((task) => String(task.room) === roomNumber && ['Needs cleaning', 'In progress'].includes(String(task.status)))) {
+      return { room, beds: [] }
+    }
+
+    const assignedBeds = new Set<string>()
+    const currentlyOccupiedBeds = new Set<string>()
+    const addBed = (bed: unknown, target: Set<string>) => {
+      const label = String(bed ?? '').trim().toUpperCase()
+      const number = Number(label.replace(/^B/, ''))
+      if (Number.isInteger(number) && number > 0 && number <= capacity) target.add(`B${number}`)
+    }
+
+    for (const student of students) {
+      if (student.id === excludeResidentId) continue
+      const bookingStatus = String(student.bookingStatus ?? '')
+      const active = bookingStatus
+        ? bookingStatus === 'Checked in'
+        : String(student.status ?? 'Active') === 'Active'
+      if (!active || String(student.room ?? '') !== roomNumber) continue
+      const start = String(student.stayStart ?? student.admissionDate ?? '')
+      const end = String(student.stayEnd ?? '')
+      if (isInDateRange(start, end, today, today)) addBed(student.bed, currentlyOccupiedBeds)
+      if (isInDateRange(start, end, startDate, endDate)) addBed(student.bed, assignedBeds)
+    }
+
+    for (const guest of guests) {
+      if (guest.id === excludeResidentId || String(guest.status) !== 'Checked in' || String(guest.room ?? '') !== roomNumber) continue
+      const start = String(guest.arrival ?? '')
+      const end = String(guest.departure ?? '')
+      if (isInDateRange(start, end, today, today)) addBed(guest.bed, currentlyOccupiedBeds)
+      if (isInDateRange(start, end, startDate, endDate)) addBed(guest.bed, assignedBeds)
+    }
+
+    for (const booking of bookings) {
+      if (booking.id === excludeBookingId || String(booking.room ?? '') !== roomNumber ||
+        !isActiveBooking(booking) || !isInDateRange(String(booking.checkIn ?? ''), String(booking.checkOut ?? ''), startDate, endDate)) continue
+      addBed(booking.bed, assignedBeds)
+      if (String(booking.status) === 'Checked in' &&
+        isInDateRange(String(booking.checkIn ?? ''), String(booking.checkOut ?? ''), today, today)) {
+        addBed(booking.bed, currentlyOccupiedBeds)
+      }
+    }
+
+    const excludedStudent = students.find((student) => student.id === excludeResidentId &&
+      String(student.room ?? '') === roomNumber &&
+      (student.bookingStatus ? student.bookingStatus === 'Checked in' : String(student.status ?? 'Active') === 'Active') &&
+      isInDateRange(String(student.stayStart ?? student.admissionDate ?? ''), String(student.stayEnd ?? ''), today, today))
+    const excludedGuest = guests.find((guest) => guest.id === excludeResidentId && String(guest.room ?? '') === roomNumber &&
+      String(guest.status) === 'Checked in' &&
+      isInDateRange(String(guest.arrival ?? ''), String(guest.departure ?? ''), today, today))
+    const excludedCurrentOccupant = excludedStudent || excludedGuest ? 1 : 0
+    const untrackedOccupancy = Math.max(0, Number(room.occupied ?? 0) - currentlyOccupiedBeds.size - excludedCurrentOccupant)
+    let filledUnknownBeds = 0
+    for (let number = 1; number <= capacity && filledUnknownBeds < untrackedOccupancy; number += 1) {
+      const bed = `B${number}`
+      if (!assignedBeds.has(bed)) {
+        assignedBeds.add(bed)
+        currentlyOccupiedBeds.add(bed)
+        filledUnknownBeds += 1
+      }
+    }
+
+    const beds = Array.from({ length: capacity }, (_, index) => `B${index + 1}`)
+      .filter((bed) => !assignedBeds.has(bed))
+    return { room, beds }
+  })
+}
+
+export async function getAvailableBeds(
+  roomNumber: string,
+  startDate = currentDateKey(),
+  endDate = startDate,
+  excludeBookingId?: string,
+  excludeResidentId?: string,
+): Promise<string[]> {
+  const availability = await getRoomBedAvailability(startDate, endDate, excludeBookingId, excludeResidentId)
+  return availability.find(({ room }) => String(room.roomNumber) === roomNumber)?.beds ?? []
+}
+
 function validateFields(fields: FieldConfig[], values: Record<string, string>) {
   for (const field of fields) {
     const value = values[field.key]?.trim() ?? ''
@@ -64,7 +175,40 @@ function normalizeValues(fields: FieldConfig[], values: Record<string, string>) 
   return result
 }
 
-async function validateBooking(values: Record<string, RecordValue>, exceptId?: string) {
+function accommodationBooking(module: ModuleConfig, values: Record<string, RecordValue>, id: string, timestamp: string): RecordItem | null {
+  const isStudent = module.key === 'students'
+  if (!isStudent && module.key !== 'guests') return null
+  const allocation = String(isStudent ? values.bookingStatus ?? 'No booking' : values.status)
+  if (isStudent && !['Reserved', 'Checked in'].includes(allocation)) return null
+  if (!isStudent && !['Reserved', 'Checked in'].includes(allocation)) return null
+
+  const room = String(values.room ?? '')
+  const bed = String(values.bed ?? '')
+  const checkIn = String(isStudent ? values.stayStart ?? '' : values.arrival ?? '')
+  const checkOut = String(isStudent ? values.stayEnd ?? '' : values.departure ?? '')
+  if (!room || !bed || !checkIn || !checkOut) {
+    throw new Error('Choose a room and available bed, and enter the stay start and end dates.')
+  }
+  if (checkOut <= checkIn) throw new Error('Stay end date must be after the start date.')
+
+  return {
+    id,
+    type: 'bookings',
+    bookingReference: `BK-${new Date().getFullYear()}-${id.slice(0, 6).toUpperCase()}`,
+    customerType: isStudent ? 'Student' : 'Guest',
+    customer: String(values.fullName ?? ''),
+    room,
+    bed,
+    checkIn,
+    checkOut,
+    amount: 0,
+    status: allocation === 'Reserved' ? 'Confirmed' : 'Checked in',
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  }
+}
+
+async function validateBooking(values: Record<string, RecordValue | undefined>, exceptId?: string, exceptResidentId?: string) {
   const room = String(values.room ?? '')
   const bed = String(values.bed ?? '')
   const checkIn = String(values.checkIn ?? '')
@@ -73,15 +217,16 @@ async function validateBooking(values: Record<string, RecordValue>, exceptId?: s
   if (!room || !bed || !checkIn || !checkOut || ['Cancelled', 'Completed'].includes(String(values.status))) return
   const roomRecord = await db.records.where('type').equals('rooms').filter((item) => String(item.roomNumber) === room).first()
   if (!roomRecord) throw new Error('Choose a room that exists in the room register.')
-  if (['Maintenance', 'Blocked', 'Needs cleaning', 'Cleaning'].includes(String(roomRecord.status))) {
+  if (isRoomUnavailable(roomRecord)) {
     throw new Error('This room is not available for bookings until it is clean and ready.')
   }
-  const pendingCleaning = await db.records.where('type').equals('housekeeping')
-    .filter((task) => String(task.room) === room && ['Needs cleaning', 'In progress'].includes(String(task.status))).first()
-  if (pendingCleaning) throw new Error('This room is not available until housekeeping completes its cleaning task.')
   const bedNumber = Number(bed.replace(/^B/i, ''))
   if (!Number.isInteger(bedNumber) || bedNumber < 1 || bedNumber > Number(roomRecord.capacity ?? 0)) {
     throw new Error('Choose a bed within this room’s capacity, for example B1.')
+  }
+  const availableBeds = await getAvailableBeds(room, checkIn, checkOut, exceptId, exceptResidentId)
+  if (!availableBeds.includes(`B${bedNumber}`)) {
+    throw new Error(`Bed B${bedNumber} is not available for the selected dates. Choose another available bed.`)
   }
   const bookings = await db.records.where('type').equals('bookings').toArray()
   const duplicate = bookings.some((booking) =>
@@ -116,6 +261,7 @@ export async function createRecord(
   validateFields(module.fields, submittedValues)
   const normalized = normalizeValues(module.fields, submittedValues)
   const now = new Date().toISOString()
+  const booking = accommodationBooking(module, normalized, crypto.randomUUID(), now)
   const item: RecordItem = {
     ...normalized,
     id: crypto.randomUUID(),
@@ -123,10 +269,12 @@ export async function createRecord(
     createdAt: now,
     updatedAt: now,
     ...(ownerEmail ? { ownerEmail } : {}),
+    ...(booking ? { bookingId: booking.id } : {}),
   }
 
   await db.transaction('rw', db.records, db.accounts, async () => {
     if (module.key === 'bookings') await validateBooking(normalized)
+    if (booking) await validateBooking(booking)
     if (module.key === 'rooms' && Number(normalized.occupied ?? 0) > Number(normalized.capacity ?? 0)) {
       throw new Error('Occupied beds cannot exceed the room capacity.')
     }
@@ -174,6 +322,7 @@ export async function createRecord(
       })
     }
     await db.records.add(item)
+    if (booking) await db.records.add(booking)
     if (module.key === 'payments') {
       await db.records.add({
         id: crypto.randomUUID(),
@@ -194,6 +343,9 @@ export async function createRecord(
       await adjustRoomOccupancy(String(normalized.room), 1)
     }
     if (module.key === 'guests' && normalized.status === 'Checked in') {
+      await adjustRoomOccupancy(String(normalized.room), 1)
+    }
+    if (module.key === 'students' && normalized.bookingStatus === 'Checked in') {
       await adjustRoomOccupancy(String(normalized.room), 1)
     }
     if (module.key === 'attendance') {
@@ -290,6 +442,26 @@ export async function updateRecord(
     const existing = await db.records.get(id)
     if (!existing || existing.type !== module.key) throw new Error('This record no longer exists.')
     if (module.key === 'bookings') await validateBooking(normalized, id)
+    const accommodationModule = module.key === 'students' || module.key === 'guests'
+    const linkedBookingId = accommodationModule ? String(existing.bookingId ?? '') : ''
+    const linkedBooking = linkedBookingId ? await db.records.get(linkedBookingId) : undefined
+    const nextBooking = accommodationModule
+      ? accommodationBooking(module, normalized, linkedBookingId || crypto.randomUUID(), new Date().toISOString())
+      : null
+    if (nextBooking) {
+      await validateBooking(nextBooking, linkedBooking?.id, existing.id)
+      await db.records.put({
+        ...(linkedBooking ?? nextBooking),
+        ...nextBooking,
+        ...(linkedBooking ? { bookingReference: linkedBooking.bookingReference, createdAt: linkedBooking.createdAt } : {}),
+      })
+    } else if (linkedBooking && isActiveBooking(linkedBooking)) {
+      await db.records.put({
+        ...linkedBooking,
+        status: module.key === 'guests' && normalized.status === 'Checked out' ? 'Completed' : 'Cancelled',
+        updatedAt: new Date().toISOString(),
+      })
+    }
     if (module.key === 'rooms') {
       if (Number(normalized.occupied ?? 0) > Number(normalized.capacity ?? 0)) {
         throw new Error('Occupied beds cannot exceed the room capacity.')
@@ -344,14 +516,22 @@ export async function updateRecord(
         await scheduleRoomCleaning(roomNumber, `Room ${roomNumber} cleaning after checkout`)
       }
     }
-    if (module.key === 'guests') {
-      const wasCheckedIn = existing.status === 'Checked in'
-      const willBeCheckedIn = normalized.status === 'Checked in'
+    if (module.key === 'guests' || module.key === 'students') {
+      const wasCheckedIn = module.key === 'guests'
+        ? existing.status === 'Checked in'
+        : existing.bookingStatus
+          ? existing.bookingStatus === 'Checked in'
+          : existing.status === 'Active'
+      const willBeCheckedIn = module.key === 'guests'
+        ? normalized.status === 'Checked in'
+        : normalized.bookingStatus
+          ? normalized.bookingStatus === 'Checked in'
+          : !existing.bookingStatus && normalized.status === 'Active'
       const oldRoom = String(existing.room ?? '')
       const newRoom = String(normalized.room ?? '')
       if (wasCheckedIn && (!willBeCheckedIn || oldRoom !== newRoom)) {
         await adjustRoomOccupancy(oldRoom, -1)
-        await scheduleRoomCleaning(oldRoom, `Room ${oldRoom} cleaning after guest checkout`)
+        await scheduleRoomCleaning(oldRoom, `Room ${oldRoom} cleaning after ${module.key === 'guests' ? 'guest' : 'student'} checkout`)
       }
       if (willBeCheckedIn && (!wasCheckedIn || oldRoom !== newRoom)) {
         await adjustRoomOccupancy(newRoom, 1)
@@ -376,7 +556,12 @@ export async function updateRecord(
         await db.records.put({ ...room, status: 'Cleaning', updatedAt: new Date().toISOString() })
       }
     }
-    const updated = { ...existing, ...normalized, updatedAt: new Date().toISOString() }
+    const updated = {
+      ...existing,
+      ...normalized,
+      ...(accommodationModule ? { bookingId: nextBooking?.id ?? linkedBookingId } : {}),
+      updatedAt: new Date().toISOString(),
+    }
     await db.records.put(updated)
     if (module.key === 'payments') {
       const invoice = await db.records.where('type').equals('invoices').filter((item) => item.reference === existing.reference).first()
@@ -436,6 +621,22 @@ export async function deleteRecord(module: ModuleConfig, id: string) {
     if (module.key === 'payments') {
       const invoice = await db.records.where('type').equals('invoices').filter((item) => item.reference === record.reference).first()
       if (invoice) await db.records.delete(invoice.id)
+    }
+    if (module.key === 'students' || module.key === 'guests') {
+      const booking = record.bookingId ? await db.records.get(String(record.bookingId)) : undefined
+      if (booking && isActiveBooking(booking)) {
+        await db.records.put({ ...booking, status: 'Cancelled', updatedAt: new Date().toISOString() })
+      }
+      const checkedIn = module.key === 'guests'
+        ? record.status === 'Checked in'
+        : record.bookingStatus
+          ? record.bookingStatus === 'Checked in'
+          : record.status === 'Active'
+      if (checkedIn && record.room) {
+        const roomNumber = String(record.room)
+        await adjustRoomOccupancy(roomNumber, -1)
+        await scheduleRoomCleaning(roomNumber, `Room ${roomNumber} cleaning after resident checkout`)
+      }
     }
     if (module.key === 'students' || module.key === 'guests' || module.key === 'staff') {
       await db.accounts.where('recordId').equals(id).delete()
